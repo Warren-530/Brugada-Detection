@@ -102,16 +102,18 @@ def _predict_batch_from_folder(folder_path: Path) -> list[dict]:
             if isinstance(pred, dict):
                 probability = float(pred.get("probability", 0.0))
                 label = pred.get("label", "Unknown")
+                decision_threshold = float(pred.get("decision_threshold", 0.35))
             else:
                 probability = float(getattr(pred, "probability", 0.0))
                 label = getattr(pred, "label", "Unknown")
+                decision_threshold = float(getattr(pred, "decision_threshold", 0.35))
 
             results.append(
                 {
                     "record": base.name,
                     "label": label,
                     "probability": probability,
-                    "risk": "High" if probability >= 0.5 else "Low",
+                    "risk": "High" if probability >= decision_threshold else "Low",
                 }
             )
         except Exception as exc:  # noqa: BLE001

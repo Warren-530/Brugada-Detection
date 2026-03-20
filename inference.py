@@ -45,6 +45,11 @@ FEATURE_LAYER_BY_MODEL = {
     'cwt_cnn': 'cwt_feature',
 }
 
+# Deployment thresholds calibrated on aligned pipeline evaluation.
+DECISION_THRESHOLD = 0.40
+LOWER_BOUND = 0.35
+UPPER_BOUND = 0.45
+
 def load_all_models():
     """Load all .keras and .pkl files centrally"""
     if MODELS: return 
@@ -219,8 +224,9 @@ def predict_from_record(record_path: str) -> dict:
     probabilities = MODELS['meta'].predict_proba(selected_features)[0]
     brugada_proba = probabilities[1] 
     
-    # 6. Logical Decision
-    is_detected = brugada_proba >= 0.50
+    # 6. Logical Decision (strictly aligned to notebook thresholding style)
+    is_detected = brugada_proba >= DECISION_THRESHOLD
+    in_gray_zone = LOWER_BOUND <= brugada_proba <= UPPER_BOUND
     confidence_percent = brugada_proba * 100.0
     
     return {
@@ -229,6 +235,8 @@ def predict_from_record(record_path: str) -> dict:
         "risk": "High" if is_detected else "Low",
         "probability": float(brugada_proba),
         "confidence": float(confidence_percent),
+        "decision_threshold": float(DECISION_THRESHOLD),
+        "gray_zone": bool(in_gray_zone),
         "signal_for_plot": base_signal,
         "fs": fs
     }
