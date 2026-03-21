@@ -93,7 +93,7 @@ class BrugadaChatbot:
 
         prompt = (
             f"Clinical case: ML model classified this ECG as '{label}' "
-            f"with probability {prob:.4f}. Provide a brief clinical interpretation "
+            f"with probability {prob:.4f}. Provide a comprehensive clinical interpretation "
             f"and next steps for physician review."
         )
 
@@ -105,10 +105,12 @@ class BrugadaChatbot:
         return advice
 
     def continue_conversation(self, user_message: str) -> str:
-        """Handle follow-up questions."""
+        """Handle follow-up questions with concise responses."""
         if not user_message.strip():
             return "Please enter a question."
-        return self._send_with_retry(user_message, None)
+        # Prepend conciseness instruction
+        concise_message = f"Answer this briefly in 2-3 sentences: {user_message}"
+        return self._send_with_retry(concise_message, None)
 
     def _send_with_retry(
         self, message: str, ml_result: Optional[dict] = None, retries: int = 8

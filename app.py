@@ -476,12 +476,12 @@ with right:
         # AI Chatbot Interface
         # =============================================================================
         st.markdown("---")
-        st.subheader("💬 AI Clinical Advisor")
+        st.subheader("AI Clinical Advisor")
         st.caption("Ask questions about the diagnosis and get evidence-based clinical guidance (powered by Gemini)")
 
         if st.session_state.chatbot_ready:
             # 1. Provide Initial Advice (in expander to save space and not cause scroll)
-            with st.expander("📋 Initial AI Advice", expanded=True):
+            with st.expander("Initial AI Advice", expanded=True):
                 try:
                     initial_advice = st.session_state.chatbot.get_advice(st.session_state.last_ml_result)
                     st.info(initial_advice)
@@ -511,7 +511,7 @@ with right:
                 st.session_state.conversation_history = []
 
             # 3. Conversation History - SCROLLABLE CONTAINER (displays first!)
-            st.write("**💬 Chat History:**")
+            st.write("**Chat History:**")
             chat_container = st.container(border=True, height=400)
             
             with chat_container:
@@ -522,7 +522,7 @@ with right:
                         if i < len(st.session_state.conversation_history) - 1:
                             st.divider()
                 else:
-                    st.caption("💭 No questions yet. Ask something below!")
+                    st.caption("No questions yet. Ask something below!")
 
             # 4. Input Section - Uses callbacks WITHOUT rerun!
             st.write("**Ask follow-up questions:**")
