@@ -52,6 +52,73 @@ LOWER_BOUND = 0.040
 UPPER_BOUND = 0.060
 
 
+def _evidence_tier(score: float, segments: int, source: str) -> str:
+    if source == "none" or segments <= 0:
+        return "weak"
+    if score >= 0.18 and segments >= 2:
+        return "strong"
+    if score >= 0.08:
+        return "moderate"
+    return "weak"
+
+
+def _evidence_reliability(segments: int, source: str) -> str:
+    if source == "none" or segments <= 0:
+        return "poor"
+    if source == "dwt" and segments >= 2:
+        return "good"
+    return "fair"
+
+
+def _build_clinician_explain(probability: float, is_detected: bool, in_gray_zone: bool, evidence: list[dict]) -> dict:
+    strong_count = sum(1 for e in evidence if e.get("tier") == "strong")
+    moderate_count = sum(1 for e in evidence if e.get("tier") == "moderate")
+    weak_count = sum(1 for e in evidence if e.get("tier") == "weak")
+
+    reliable_count = sum(1 for e in evidence if e.get("reliability") in {"good", "fair"})
+    morphology_score = float(np.mean([float(e.get("score", 0.0)) for e in evidence])) if evidence else 0.0
+    dominant_lead = max(evidence, key=lambda x: float(x.get("score", 0.0))).get("lead", "N/A") if evidence else "N/A"
+
+    if in_gray_zone:
+        recommendation_tier = "gray_zone_priority_review"
+        recommendation_text = "Prioritize manual over-read, correlate with symptoms, and consider repeat ECG acquisition."
+    elif is_detected and strong_count > 0:
+        recommendation_tier = "urgent_cardiology_review"
+        recommendation_text = "Urgent cardiology review is recommended due to high AI risk with robust V1-V3 morphology evidence."
+    elif is_detected:
+        recommendation_tier = "urgent_review_repeat_ecg_quality_check"
+        recommendation_text = "Urgent review is recommended; repeat ECG and lead-quality check are advised due to weak morphology evidence."
+    else:
+        recommendation_tier = "routine_clinical_correlation"
+        recommendation_text = "Low AI risk; continue routine clinical correlation and follow standard workflow."
+
+    morphology_model_mismatch = bool((is_detected and strong_count == 0) or ((not is_detected) and strong_count >= 2))
+
+    next_actions = [
+        "Verify V1-V3 lead placement and signal quality.",
+        "Correlate with symptoms, syncope history, and family history.",
+    ]
+    if in_gray_zone or is_detected:
+        next_actions.append("Consider repeat ECG for morphology confirmation.")
+    if is_detected:
+        next_actions.append("Escalate to cardiology review pathway.")
+
+    return {
+        "recommendation_tier": recommendation_tier,
+        "recommendation_text": recommendation_text,
+        "evidence_counts": {
+            "strong": int(strong_count),
+            "moderate": int(moderate_count),
+            "weak": int(weak_count),
+            "reliable": int(reliable_count),
+        },
+        "morphology_score": morphology_score,
+        "dominant_lead": dominant_lead,
+        "morphology_model_mismatch": morphology_model_mismatch,
+        "next_actions": next_actions,
+    }
+
+
 def _extract_stat_features(sig_2d: np.ndarray) -> list[float]:
     stat_feat: list[float] = []
     for lead in range(12):
@@ -96,11 +163,24 @@ def _extract_expert_features_and_highlights(
         sig = sig_2d[:, l_idx]
         try:
             _, rpeaks = nk.ecg_peaks(sig, sampling_rate=fs)
-            try:
-                _, waves = nk.ecg_delineate(sig, rpeaks, sampling_rate=fs, method="peak")
-                j_offsets = [int(x) for x in waves["ECG_R_Offsets"] if not np.isnan(x) and int(x) < len(sig)]
-            except Exception:
-                j_offsets = []
+            j_offsets = []
+            source_method = "none"
+            for method in ("dwt", "peak"):
+                try:
+                    _, waves = nk.ecg_delineate(sig, rpeaks, sampling_rate=fs, method=method)
+                    offsets = waves.get("ECG_R_Offsets", [])
+                    j_offsets = sorted(
+                        {
+                            int(x)
+                            for x in offsets
+                            if x is not None and not np.isnan(x) and 0 <= int(x) < len(sig) - 8
+                        }
+                    )
+                    if j_offsets:
+                        source_method = method
+                        break
+                except Exception:
+                    continue
 
             if j_offsets:
                 j_heights = [sig[j] for j in j_offsets]
@@ -131,8 +211,10 @@ def _extract_expert_features_and_highlights(
                         "st_slope": avg_slope,
                         "curvature": curvature,
                         "segments": len(highlights[lead_name]),
-                        "source": "j_point",
+                        "source": source_method,
                         "score": float(score),
+                        "tier": _evidence_tier(float(score), len(highlights[lead_name]), source_method),
+                        "reliability": _evidence_reliability(len(highlights[lead_name]), source_method),
                     }
                 )
             else:
@@ -146,6 +228,8 @@ def _extract_expert_features_and_highlights(
                         "segments": 0,
                         "source": "none",
                         "score": 0.0,
+                        "tier": "weak",
+                        "reliability": "poor",
                     }
                 )
         except Exception:
@@ -159,6 +243,8 @@ def _extract_expert_features_and_highlights(
                     "segments": 0,
                     "source": "none",
                     "score": 0.0,
+                    "tier": "weak",
+                    "reliability": "poor",
                 }
             )
 
@@ -173,27 +259,43 @@ def extract_clinical_package(sig_2d: np.ndarray, fs: float) -> tuple[np.ndarray,
 
 def _build_explanation(probability: float, is_detected: bool, in_gray_zone: bool, evidence: list[dict]) -> str:
     sorted_evidence = sorted(evidence, key=lambda x: x["score"], reverse=True)
-    top_leads = [e for e in sorted_evidence if e["segments"] > 0][:2]
+    informative_leads = [
+        e
+        for e in sorted_evidence
+        if e.get("segments", 0) > 0 and e.get("tier", "weak") in {"strong", "moderate"}
+    ][:2]
+    weak_leads = [e for e in sorted_evidence if e.get("segments", 0) > 0 and e.get("tier", "weak") == "weak"]
 
-    if top_leads:
+    if informative_leads:
         lead_summary = ", ".join(
             [
                 f"{e['lead']} (J={e['j_height']:.3f}, slope={e['st_slope']:.4f}, curvature={e['curvature']:.4f})"
-                for e in top_leads
+                for e in informative_leads
             ]
         )
-        morphology_note = f"Highlighted V1-V3 segments indicate morphology around J-point/ST regions, most notable in {lead_summary}."
+        if is_detected or in_gray_zone:
+            morphology_note = f"Highlighted V1-V3 segments indicate morphology around J-point/ST regions, most notable in {lead_summary}."
+        else:
+            morphology_note = (
+                f"V1-V3 morphology windows were analyzed (most notable in {lead_summary}); "
+                "these features alone are not sufficient for a positive Brugada flag."
+            )
+    elif weak_leads:
+        morphology_note = (
+            "V1-V3 morphology windows were detected, but current handcrafted morphology strength is weak; "
+            "decision should rely on full model output with manual cardiology review."
+        )
     else:
-        morphology_note = "No robust V1-V3 morphological segment was detected for explainable highlight."
+        morphology_note = "No robust V1-V3 morphological segment was detected for explainable highlight in this record."
 
     if in_gray_zone:
         triage_note = "Prediction is in the gray zone; cardiologist review is strongly recommended."
     elif is_detected:
-        triage_note = "Model probability crosses the clinical decision threshold and is flagged as high-risk."
+        triage_note = "Model probability crosses the clinical decision threshold and is flagged as high-risk triage."
     else:
-        triage_note = "Model probability is below the clinical decision threshold and is flagged as low-risk."
+        triage_note = "Model probability is below the clinical decision threshold and is flagged as low-risk triage."
 
-    return f"Brugada risk probability={probability:.4f}. {triage_note} {morphology_note}"
+    return f"Brugada risk probability={probability:.4f}. {triage_note} {morphology_note} This AI output supports triage and does not replace physician diagnosis."
 
 def load_all_models():
     """Load all .keras and .pkl files centrally"""
@@ -296,6 +398,16 @@ def predict_from_record(record_path: str) -> dict:
     feat_eegnet = MODELS['eegnet_feat'].predict(signal_1d, verbose=0)
     feat_blstm  = MODELS['blstm_feat'].predict(signal_1d, verbose=0)
     feat_cwt    = MODELS['cwt_feat'].predict(signal_2d, verbose=0)
+
+    # Embedding-norm share offers a lightweight view of which deep view dominates this sample.
+    emb_norms = {
+        "resnet": float(np.linalg.norm(feat_resnet)),
+        "eegnet": float(np.linalg.norm(feat_eegnet)),
+        "blstm": float(np.linalg.norm(feat_blstm)),
+        "cwt_cnn": float(np.linalg.norm(feat_cwt)),
+    }
+    total_norm = sum(emb_norms.values()) + 1e-8
+    model_contributions = {k: float(v / total_norm * 100.0) for k, v in emb_norms.items()}
     
     # 3. Clinical Handcrafted Features (Statistical + Expert)
     clinical_feat, highlighted_segments, evidence = extract_clinical_package(base_signal, fs=fs)
@@ -330,12 +442,19 @@ def predict_from_record(record_path: str) -> dict:
     # only flag borderline positives as gray-zone to avoid overwhelming low-risk normals.
     in_gray_zone = DECISION_THRESHOLD <= brugada_proba <= UPPER_BOUND
 
-    # Class-conditional confidence for user-facing interpretation.
-    # If predicted positive -> confidence = P(Brugada)
-    # If predicted normal   -> confidence = P(Normal) = 1 - P(Brugada)
-    decision_confidence = float(brugada_proba if is_detected else (1.0 - brugada_proba))
-    confidence_percent = decision_confidence * 100.0
+    # Two confidence views for clearer interpretation.
+    # 1) Class confidence: confidence of the predicted class.
+    class_confidence = float(brugada_proba if is_detected else (1.0 - brugada_proba))
+
+    # 2) Threshold stability: how far the sample is from the decision boundary.
+    # 50% near threshold, approaching 100% farther away.
+    max_margin = max(DECISION_THRESHOLD, 1.0 - DECISION_THRESHOLD)
+    decision_margin = abs(brugada_proba - DECISION_THRESHOLD)
+    decision_stability = float(0.5 + 0.5 * np.clip(decision_margin / max_margin, 0.0, 1.0))
+    confidence_percent = class_confidence * 100.0
+    stability_percent = decision_stability * 100.0
     explanation = _build_explanation(brugada_proba, is_detected, in_gray_zone, evidence)
+    clinician_explain = _build_clinician_explain(brugada_proba, is_detected, in_gray_zone, evidence)
     
     return {
         "status": "success",
@@ -343,12 +462,15 @@ def predict_from_record(record_path: str) -> dict:
         "risk": "High" if is_detected else "Low",
         "probability": float(brugada_proba),
         "confidence": float(confidence_percent),
+        "decision_stability": float(stability_percent),
         "decision_threshold": float(DECISION_THRESHOLD),
         "gray_zone": bool(in_gray_zone),
         "highlighted_segments": highlighted_segments,
         "lead_names": ["I", "II", "III", "aVR", "aVL", "aVF", "V1", "V2", "V3", "V4", "V5", "V6"],
         "explanation": explanation,
         "clinical_evidence": evidence,
+        "model_contributions": model_contributions,
+        "clinician_explain": clinician_explain,
         "signal_for_plot": base_signal,
         "fs": fs
     }
