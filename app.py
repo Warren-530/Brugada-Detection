@@ -68,11 +68,13 @@ def _plot_12_lead(signal: np.ndarray, lead_names: list[str], fs: float, highligh
 
 def _plot_decision_margin(probability: float, threshold: float):
     fig, ax = plt.subplots(figsize=(8.0, 1.8))
+    gray_upper = min(1.0, threshold + 0.01)
     ax.axvspan(0.0, threshold, color="#DCFCE7", alpha=0.9, label="Below threshold")
-    ax.axvspan(threshold, max(0.20, probability + 0.05), color="#FEE2E2", alpha=0.65, label="Above threshold")
+    ax.axvspan(threshold, 1.0, color="#FEE2E2", alpha=0.60, label="Above threshold")
+    ax.axvspan(threshold, gray_upper, color="#FEF3C7", alpha=0.95, label="Borderline-positive zone")
     ax.axvline(threshold, color="#16A34A", linewidth=2.0, linestyle="--", label=f"Threshold {threshold:.3f}")
     ax.scatter([probability], [0.5], color="#DC2626", s=90, zorder=5, label=f"Prediction {probability:.3f}")
-    ax.set_xlim(0.0, max(0.20, probability + 0.05))
+    ax.set_xlim(0.0, 1.0)
     ax.set_ylim(0.0, 1.0)
     ax.set_yticks([])
     ax.set_xlabel("Brugada probability")
@@ -88,7 +90,7 @@ def _plot_evidence_heatmap(evidence_df: pd.DataFrame):
     for lead in ["V1", "V2", "V3"]:
         sub = evidence_df[evidence_df["lead"] == lead]
         if sub.empty:
-            rows.append([0.0, 0.0, 0.0, 0.0])
+            rows.append([np.nan, np.nan, np.nan, np.nan])
             continue
         item = sub.iloc[0]
         rows.append(
@@ -111,7 +113,10 @@ def _plot_evidence_heatmap(evidence_df: pd.DataFrame):
 
     for i in range(matrix.shape[0]):
         for j in range(matrix.shape[1]):
-            ax.text(j, i, f"{matrix[i, j]:.3f}", ha="center", va="center", color="#111827", fontsize=8)
+            if np.isnan(matrix[i, j]):
+                ax.text(j, i, "N/A", ha="center", va="center", color="#4B5563", fontsize=8)
+            else:
+                ax.text(j, i, f"{matrix[i, j]:.3f}", ha="center", va="center", color="#111827", fontsize=8)
 
     cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     cbar.set_label("Feature intensity")
@@ -127,6 +132,28 @@ def _tier_sort_value(tier: str) -> int:
         "routine_clinical_correlation": 3,
     }
     return mapping.get(str(tier), 9)
+
+
+def _safe_int(value) -> int:
+    try:
+        return int(float(value))
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _normalize_clinician_explain(raw) -> dict:
+    if not isinstance(raw, dict):
+        return {}
+    return raw
+
+
+def _recommendation_banner(recommendation_tier: str, recommendation_text: str):
+    if recommendation_tier in {"urgent_cardiology_review", "urgent_review_repeat_ecg_quality_check"}:
+        st.warning(recommendation_text)
+    elif recommendation_tier == "gray_zone_priority_review":
+        st.info(recommendation_text)
+    else:
+        st.success(recommendation_text)
 
 
 def _save_uploaded_pair(hea_file, dat_file) -> Path:
@@ -168,22 +195,23 @@ def _predict_batch_from_folder(folder_path: Path) -> list[dict]:
                 stability = float(pred.get("decision_stability", 0.0))
                 gray_zone = bool(pred.get("gray_zone", False))
                 decision_threshold = float(pred.get("decision_threshold", 0.05))
-                clinician_explain = pred.get("clinician_explain", {}) or {}
+                clinician_explain = _normalize_clinician_explain(pred.get("clinician_explain", {}))
             else:
                 probability = float(getattr(pred, "probability", 0.0))
                 label = getattr(pred, "label", "Unknown")
                 stability = float(getattr(pred, "decision_stability", 0.0))
                 gray_zone = bool(getattr(pred, "gray_zone", False))
                 decision_threshold = float(getattr(pred, "decision_threshold", 0.05))
-                clinician_explain = getattr(pred, "clinician_explain", {}) or {}
+                clinician_explain = _normalize_clinician_explain(getattr(pred, "clinician_explain", {}))
 
-            evidence_counts = clinician_explain.get("evidence_counts", {}) if isinstance(clinician_explain, dict) else {}
+            evidence_counts = clinician_explain.get("evidence_counts", {})
             evidence_strength_summary = (
-                f"S{int(evidence_counts.get('strong', 0))}/"
-                f"M{int(evidence_counts.get('moderate', 0))}/"
-                f"W{int(evidence_counts.get('weak', 0))}"
+                f"S{_safe_int(evidence_counts.get('strong', 0))}/"
+                f"M{_safe_int(evidence_counts.get('moderate', 0))}/"
+                f"W{_safe_int(evidence_counts.get('weak', 0))}"
             )
             recommendation_tier = str(clinician_explain.get("recommendation_tier", "routine_clinical_correlation"))
+            mismatch = bool(clinician_explain.get("morphology_model_mismatch", False))
 
             results.append(
                 {
@@ -195,6 +223,7 @@ def _predict_batch_from_folder(folder_path: Path) -> list[dict]:
                     "risk": "High" if probability >= decision_threshold else "Low",
                     "recommendation_tier": recommendation_tier,
                     "evidence_strength_summary": evidence_strength_summary,
+                    "morphology_model_mismatch": mismatch,
                 }
             )
         except Exception as exc:  # noqa: BLE001
@@ -203,7 +232,12 @@ def _predict_batch_from_folder(folder_path: Path) -> list[dict]:
                     "record": base.name,
                     "label": "Inference Failed",
                     "probability": 0.0,
+                    "decision_stability": 0.0,
+                    "gray_zone": False,
                     "risk": "Unknown",
+                    "recommendation_tier": "routine_clinical_correlation",
+                    "evidence_strength_summary": "S0/M0/W0",
+                    "morphology_model_mismatch": False,
                     "error": str(exc),
                 }
             )
@@ -232,7 +266,9 @@ with left:
 with right:
     st.subheader("Clinical Report")
 
-    if run_btn:
+    if run_btn and (hea_upload is None or dat_upload is None):
+        st.error("Please upload both .hea and .dat files before running diagnosis.")
+    elif run_btn:
         try:
             with st.spinner("Running inference pipeline..."):
                 record_base = _save_uploaded_pair(hea_upload, dat_upload)
@@ -242,10 +278,11 @@ with right:
                 label = result.get("label", "Unknown")
                 confidence_percent = float(result.get("confidence", 0.0))
                 stability_percent = float(result.get("decision_stability", 0.0))
+                class_support_percent = float(result.get("class_support", 0.0))
                 probability = float(result.get("probability", 0.0))
                 gray_zone = bool(result.get("gray_zone", False))
                 decision_threshold = float(result.get("decision_threshold", 0.05))
-                clinician_explain = result.get("clinician_explain", {}) or {}
+                clinician_explain = _normalize_clinician_explain(result.get("clinician_explain", {}))
                 model_contributions = result.get("model_contributions", {}) or {}
                 explanation = result.get(
                     "explanation",
@@ -260,10 +297,11 @@ with right:
                 label = result.label
                 confidence_percent = float(result.confidence_percent)
                 stability_percent = float(getattr(result, "decision_stability", 0.0))
+                class_support_percent = float(getattr(result, "class_support", 0.0))
                 probability = float(result.probability)
                 gray_zone = bool(getattr(result, "gray_zone", False))
                 decision_threshold = float(getattr(result, "decision_threshold", 0.05))
-                clinician_explain = getattr(result, "clinician_explain", {}) or {}
+                clinician_explain = _normalize_clinician_explain(getattr(result, "clinician_explain", {}))
                 model_contributions = getattr(result, "model_contributions", {}) or {}
                 explanation = result.explanation
                 signal_plot = result.signal
@@ -272,6 +310,16 @@ with right:
                 highlights = result.highlighted_segments
                 clinical_evidence = getattr(result, "clinical_evidence", [])
 
+            if not isinstance(clinical_evidence, list):
+                clinical_evidence = []
+            clinical_evidence = [item for item in clinical_evidence if isinstance(item, dict)]
+
+            rec_tier = str(clinician_explain.get("recommendation_tier", "routine_clinical_correlation"))
+            rec_text = str(clinician_explain.get("recommendation_text", "Clinical correlation is recommended."))
+            evidence_counts = clinician_explain.get("evidence_counts", {})
+            next_actions = clinician_explain.get("next_actions", []) if isinstance(clinician_explain.get("next_actions", []), list) else []
+            mismatch = bool(clinician_explain.get("morphology_model_mismatch", False))
+
             if label == "Brugada Syndrome Detected":
                 st.error(label)
             else:
@@ -279,26 +327,38 @@ with right:
 
             if gray_zone:
                 st.warning("Gray-zone prediction: probability is close to the decision threshold and needs clinician review.")
+                st.caption(f"Borderline-positive zone policy: [{decision_threshold:.3f}, {decision_threshold + 0.01:.3f}].")
 
-            st.metric("AI Class Confidence", f"{confidence_percent:.1f}%")
-            st.metric("Decision Stability", f"{stability_percent:.1f}%")
-            st.metric("Brugada Risk Probability", f"{probability * 100.0:.2f}%")
-            st.caption("AI Class Confidence: certainty of the predicted class, not the same as disease probability.")
-            st.caption("Decision Stability: distance from decision threshold; lower values indicate a borderline call.")
-            st.info("Interpretation: Probability quantifies Brugada risk, confidence quantifies class certainty, and stability quantifies boundary distance.")
-            st.write(explanation)
+            if mismatch:
+                st.warning("Discordant case: model decision and V1-V3 morphology strength are not strongly aligned. Prioritize manual review.")
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Decision Confidence (derived)", f"{confidence_percent:.1f}%")
+            m2.metric("Threshold Distance", f"{stability_percent:.2f} pp")
+            m3.metric("Predicted-Class Support", f"{class_support_percent:.1f}%")
+            m4.metric("Brugada Risk Probability", f"{probability * 100.0:.2f}%")
+            st.caption("Decision Confidence (derived): monotonic transform of threshold distance for easier quick reading.")
+            st.caption("Threshold Distance: absolute distance from threshold in percentage points; lower means more borderline.")
+            st.caption("Predicted-Class Support: posterior support for the assigned label (can differ from risk probability under low-threshold policy).")
+            st.info("Interpretation: prioritize Brugada Risk Probability for risk level and Threshold Distance for borderline assessment; Decision Confidence is the same boundary information in a normalized view.")
+            st.write(explanation or "No explanation text returned by model. Please review metrics and clinical evidence.")
             st.caption(f"Raw probability: {probability:.4f} | Threshold: {decision_threshold:.4f}")
             st.caption("Red ECG overlays are shown for Brugada-detected or gray-zone cases.")
 
             margin_fig = _plot_decision_margin(probability=probability, threshold=decision_threshold)
             st.pyplot(margin_fig, clear_figure=True)
 
-            if label == "Brugada Syndrome Detected" and not gray_zone:
-                st.warning("Triage suggestion: urgent cardiology review is recommended.")
-            elif gray_zone:
-                st.info("Triage suggestion: prioritize manual over-read and consider repeat ECG.")
-            else:
-                st.info("Triage suggestion: low AI risk; correlate with symptoms and routine clinical workflow.")
+            _recommendation_banner(rec_tier, rec_text)
+
+            if gray_zone or stability_percent <= 1.0:
+                st.warning("Borderline Interpretation Protocol")
+                st.caption(
+                    "This record is close to the decision threshold. Use a conservative review workflow before final clinical action."
+                )
+                st.write("- Repeat ECG acquisition and verify V1-V3 lead placement.")
+                st.write("- Prioritize manual cardiologist over-read for morphology confirmation.")
+                st.write("- Correlate with symptoms, syncope history, and family history.")
+                st.write("- If uncertainty remains, escalate to urgent specialist review pathway.")
 
             if clinical_evidence:
                 evidence_df = pd.DataFrame(clinical_evidence)
@@ -306,7 +366,13 @@ with right:
                 show_cols = [c for c in preferred_cols if c in evidence_df.columns]
                 if show_cols:
                     st.caption("Clinical Evidence (V1-V3):")
-                    st.dataframe(evidence_df[show_cols], use_container_width=True)
+                    display_df = evidence_df[show_cols].rename(
+                        columns={
+                            "tier": "evidence_strength",
+                            "reliability": "extraction_reliability",
+                        }
+                    )
+                    st.dataframe(display_df, use_container_width=True)
 
                 tier_cols = st.columns(3)
                 for idx, lead in enumerate(["V1", "V2", "V3"]):
@@ -317,12 +383,16 @@ with right:
                     else:
                         tier_text = str(lead_row.iloc[0].get("tier", "weak"))
                         rel_text = str(lead_row.iloc[0].get("reliability", "poor"))
-                    tier_cols[idx].metric(f"{lead} evidence", tier_text.title(), rel_text.title())
+                    tier_cols[idx].markdown(f"**{lead} Evidence Strength**")
+                    tier_cols[idx].markdown(f"### {tier_text.title()}")
+                    tier_cols[idx].caption(f"Extraction Reliability: {rel_text.title()}")
 
                 heatmap_fig = _plot_evidence_heatmap(evidence_df)
                 st.pyplot(heatmap_fig, clear_figure=True)
+                st.caption("Evidence Strength legend: strong=clear morphology support, moderate=partial support, weak=limited support.")
+                st.caption("Extraction Reliability legend: good=delineation robust, fair=usable but less robust, poor=insufficient delineation.")
 
-            if model_contributions:
+            if model_contributions and sum(float(v) for v in model_contributions.values()) > 0:
                 st.caption("Deep-view contribution share (embedding norm %):")
                 contrib_df = pd.DataFrame(
                     {
@@ -332,27 +402,20 @@ with right:
                 ).sort_values("share", ascending=False)
                 st.bar_chart(contrib_df.set_index("model"))
 
-            rec_tier = str(clinician_explain.get("recommendation_tier", "routine_clinical_correlation"))
-            rec_text = str(clinician_explain.get("recommendation_text", "Clinical correlation is recommended."))
-            evidence_counts = clinician_explain.get("evidence_counts", {}) if isinstance(clinician_explain, dict) else {}
-            next_actions = clinician_explain.get("next_actions", []) if isinstance(clinician_explain, dict) else []
-            mismatch = bool(clinician_explain.get("morphology_model_mismatch", False)) if isinstance(clinician_explain, dict) else False
-
             st.subheader("Recommended Clinical Actions")
-            st.warning(rec_text)
+            st.caption("Action checklist")
             st.caption(
                 f"Tier: {rec_tier} | Evidence S/M/W: "
-                f"{int(evidence_counts.get('strong', 0))}/"
-                f"{int(evidence_counts.get('moderate', 0))}/"
-                f"{int(evidence_counts.get('weak', 0))}"
+                f"{_safe_int(evidence_counts.get('strong', 0))}/"
+                f"{_safe_int(evidence_counts.get('moderate', 0))}/"
+                f"{_safe_int(evidence_counts.get('weak', 0))}"
             )
             for action in next_actions:
-                st.write(f"- {action}")
-            if mismatch:
-                st.warning("Evidence mismatch: model decision and morphology strength are not strongly aligned. Prioritize manual review.")
+                if isinstance(action, str) and action.strip():
+                    st.write(f"- {action}")
             st.caption("Clinical note: AI output supports triage and does not replace physician diagnosis.")
 
-            evidence_segments = sum(int(item.get("segments", 0)) for item in clinical_evidence)
+            evidence_segments = sum(_safe_int(item.get("segments", 0)) for item in clinical_evidence)
             if probability >= decision_threshold and evidence_segments == 0:
                 st.warning("High-risk prediction with no V1-V3 morphological evidence. Manual cardiology review is recommended.")
 
@@ -384,13 +447,13 @@ with right:
                 df = pd.DataFrame(batch_results)
                 if "recommendation_tier" in df.columns:
                     df["_tier_rank"] = df["recommendation_tier"].map(_tier_sort_value)
-                    df = df.sort_values(["_tier_rank", "probability"], ascending=[True, False]).drop(columns=["_tier_rank"])
+                    df = df.sort_values(["_tier_rank", "probability", "decision_stability"], ascending=[True, False, False]).drop(columns=["_tier_rank"])
                 else:
                     df = df.sort_values("probability", ascending=False)
                 st.dataframe(df, use_container_width=True)
 
                 if "recommendation_tier" in df.columns:
-                    urgent = df[df["recommendation_tier"] == "urgent_cardiology_review"]
+                    urgent = df[df["recommendation_tier"].isin(["urgent_cardiology_review", "urgent_review_repeat_ecg_quality_check"])].sort_values("probability", ascending=False)
                 else:
                     urgent = df.iloc[0:0]
 
@@ -398,6 +461,11 @@ with right:
                     gray_queue = df[df["gray_zone"] == True]
                 else:
                     gray_queue = df.iloc[0:0]
+
+                if "morphology_model_mismatch" in df.columns:
+                    discordant = df[df["morphology_model_mismatch"] == True]
+                else:
+                    discordant = df.iloc[0:0]
 
                 st.subheader("Urgent Review Queue")
                 if urgent.empty:
@@ -410,3 +478,9 @@ with right:
                     st.info("No gray-zone records detected in this batch.")
                 else:
                     st.dataframe(gray_queue[["record", "probability", "decision_stability", "label", "recommendation_tier"]], use_container_width=True)
+
+                st.subheader("Discordant Cases Queue")
+                if discordant.empty:
+                    st.info("No model-morphology discordant records detected in this batch.")
+                else:
+                    st.dataframe(discordant[["record", "probability", "decision_stability", "label", "recommendation_tier"]], use_container_width=True)

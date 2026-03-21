@@ -48,7 +48,6 @@ FEATURE_LAYER_BY_MODEL = {
 # Notebook-aligned deployment thresholds
 # Clinical safety override to preserve maximal recall in deployment.
 DECISION_THRESHOLD = 0.050
-LOWER_BOUND = 0.040
 UPPER_BOUND = 0.060
 
 
@@ -79,18 +78,21 @@ def _build_clinician_explain(probability: float, is_detected: bool, in_gray_zone
     morphology_score = float(np.mean([float(e.get("score", 0.0)) for e in evidence])) if evidence else 0.0
     dominant_lead = max(evidence, key=lambda x: float(x.get("score", 0.0))).get("lead", "N/A") if evidence else "N/A"
 
-    if in_gray_zone:
-        recommendation_tier = "gray_zone_priority_review"
-        recommendation_text = "Prioritize manual over-read, correlate with symptoms, and consider repeat ECG acquisition."
-    elif is_detected and strong_count > 0:
+    if is_detected and strong_count > 0:
         recommendation_tier = "urgent_cardiology_review"
         recommendation_text = "Urgent cardiology review is recommended due to high AI risk with robust V1-V3 morphology evidence."
     elif is_detected:
         recommendation_tier = "urgent_review_repeat_ecg_quality_check"
-        recommendation_text = "Urgent review is recommended; repeat ECG and lead-quality check are advised due to weak morphology evidence."
+        if in_gray_zone:
+            recommendation_text = "Borderline positive AI risk with weak morphology evidence; prioritize manual over-read, repeat ECG, and lead-quality check."
+        else:
+            recommendation_text = "Urgent review is recommended; repeat ECG and lead-quality check are advised due to weak morphology evidence."
     else:
         recommendation_tier = "routine_clinical_correlation"
         recommendation_text = "Low AI risk; continue routine clinical correlation and follow standard workflow."
+
+    if in_gray_zone:
+        recommendation_text += " Near-threshold note: treat this as a borderline-positive case and prioritize careful manual review."
 
     morphology_model_mismatch = bool((is_detected and strong_count == 0) or ((not is_detected) and strong_count >= 2))
 
@@ -289,7 +291,7 @@ def _build_explanation(probability: float, is_detected: bool, in_gray_zone: bool
         morphology_note = "No robust V1-V3 morphological segment was detected for explainable highlight in this record."
 
     if in_gray_zone:
-        triage_note = "Prediction is in the gray zone; cardiologist review is strongly recommended."
+        triage_note = "Prediction is in the borderline-positive zone near threshold; cardiologist review is strongly recommended."
     elif is_detected:
         triage_note = "Model probability crosses the clinical decision threshold and is flagged as high-risk triage."
     else:
@@ -438,21 +440,25 @@ def predict_from_record(record_path: str) -> dict:
     
     # 6. Logical Decision (strictly aligned to notebook thresholding style)
     is_detected = brugada_proba >= DECISION_THRESHOLD
-    # Asymmetric gray-zone for low-threshold deployment:
-    # only flag borderline positives as gray-zone to avoid overwhelming low-risk normals.
+    # Borderline-positive zone for low-threshold deployment:
+    # only flag positives close to threshold to avoid overwhelming low-risk normals.
     in_gray_zone = DECISION_THRESHOLD <= brugada_proba <= UPPER_BOUND
 
-    # Two confidence views for clearer interpretation.
-    # 1) Class confidence: confidence of the predicted class.
-    class_confidence = float(brugada_proba if is_detected else (1.0 - brugada_proba))
+    # Confidence semantics:
+    # 1) Predicted-class support: posterior support for the assigned label.
+    class_support = float(brugada_proba if is_detected else (1.0 - brugada_proba))
 
-    # 2) Threshold stability: how far the sample is from the decision boundary.
+    # 2) Decision confidence: boundary-aware confidence, continuous around threshold.
     # 50% near threshold, approaching 100% farther away.
     max_margin = max(DECISION_THRESHOLD, 1.0 - DECISION_THRESHOLD)
     decision_margin = abs(brugada_proba - DECISION_THRESHOLD)
-    decision_stability = float(0.5 + 0.5 * np.clip(decision_margin / max_margin, 0.0, 1.0))
-    confidence_percent = class_confidence * 100.0
-    stability_percent = decision_stability * 100.0
+    margin_ratio = float(np.clip(decision_margin / max_margin, 0.0, 1.0))
+    decision_confidence = float(0.5 + 0.5 * margin_ratio)
+    confidence_percent = decision_confidence * 100.0
+
+    # 3) Threshold distance (percentage points) for transparent boundary proximity.
+    stability_percent = float(decision_margin * 100.0)
+    class_support_percent = class_support * 100.0
     explanation = _build_explanation(brugada_proba, is_detected, in_gray_zone, evidence)
     clinician_explain = _build_clinician_explain(brugada_proba, is_detected, in_gray_zone, evidence)
     
@@ -463,6 +469,7 @@ def predict_from_record(record_path: str) -> dict:
         "probability": float(brugada_proba),
         "confidence": float(confidence_percent),
         "decision_stability": float(stability_percent),
+        "class_support": float(class_support_percent),
         "decision_threshold": float(DECISION_THRESHOLD),
         "gray_zone": bool(in_gray_zone),
         "highlighted_segments": highlighted_segments,
