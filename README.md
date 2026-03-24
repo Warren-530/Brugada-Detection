@@ -13,19 +13,110 @@ The application is designed for high-recall triage behavior and explicit physici
 
 Important note: this tool supports triage and workflow prioritization. It does not replace physician diagnosis.
 
-## 2. Repository Contents
-- `app.py`: Streamlit web interface and report rendering
-- `inference.py`: End-to-end inference pipeline, feature extraction, recommendation logic
-- `requirements.txt`: Python dependencies (includes TensorFlow, scikit-learn, google-genai for AI chatbot)
-- `extractor_resnet.keras`: 1D ResNet feature extractor
-- `extractor_eegnet.keras`: EEGNet-style feature extractor
-- `extractor_bilstm.keras`: Attention-BiLSTM feature extractor
-- `extractor_cwt_cnn.keras`: CWT-CNN feature extractor
-- `brugada_scaler.pkl`: StandardScaler fitted on training data
-- `brugada_selector.pkl`: Feature selector fitted on training data
-- `brugada_meta_learner.pkl`: Trained meta-learner for final risk probability
+## 2. Environment Setup and First Run
 
-## 3. Model Architecture and Inference Pipeline
+**Prerequisites**: Python 3.12 recommended, latest `pip`, and Git installed.
+
+### 2.1 Setup and Dependency Installation
+Run these commands in PowerShell (Windows) to clone the repository, create a virtual environment, and install all dependencies:
+
+```powershell
+# 1. Clone & Enter Project
+git clone https://github.com/Warren-530/Brugada.git
+cd Brugada
+
+# 2. Create & Activate Virtual Environment
+python -m venv .venv
+
+# Note: If execution policy blocks activation, use:
+# Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\.venv\Scripts\Activate.ps1
+
+# 3. Install Dependencies
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+*(Note: `requirements.txt` includes TensorFlow, scikit-learn, and `google-genai` for the AI Chatbot feature).*
+
+
+
+### 2.2 Verify Core Model Files
+Confirm these files are present in the `models/` directory before running:
+- `extractor_resnet.keras`
+- `extractor_eegnet.keras`
+- `extractor_bilstm.keras`
+- `extractor_cwt_cnn.keras`
+- `brugada_scaler.pkl`
+- `brugada_selector.pkl`
+- `brugada_meta_learner.pkl`
+
+### 2.3 Set up Gemini API key (For Optional AI Chatbot)
+The app runs locally without an API key, but to enable the AI Clinical Advisor chatbot powered by `google-genai`, you need a Gemini API key:
+1. Go to [Google AI Studio](https://aistudio.google.com/apikey) and create a key
+2. Save it in `.streamlit/secrets.toml` within the Brugada folder:
+   ```toml
+   GEMINI_API_KEY = "your-api-key-here"
+   ```
+   *Alternatively, set the environment variable in PowerShell: `$env:GEMINI_API_KEY = "your-api-key-here"`*
+
+### 2.4 Start Web App
+Run the Streamlit application:
+```powershell
+python -m streamlit run app.py
+```
+After running, open the local URL shown (e.g., `http://localhost:8501`).
+
+## 3. Routine Daily Run (Environment Already Set)
+If setup is already done and dependencies are installed:
+
+### 3.1 Open project and activate venv
+
+```powershell
+cd Brugada
+.\.venv\Scripts\Activate.ps1
+```
+
+### 3.2 Optional cache clear
+Use this if you suspect stale Streamlit state:
+
+```powershell
+streamlit cache clear
+```
+
+### 3.3 Run app
+
+```powershell
+python -m streamlit run app.py
+```
+
+### 3.4 Use the app
+Single-record mode:
+- Upload matched `.hea` and `.dat`
+- Click Run Diagnosis
+- Review risk metrics, recommendation, and evidence
+
+Batch mode:
+- Upload multiple `.hea` and `.dat`
+- Click Run Batch Risk List
+- Review tiered queues and discordant cases first
+
+## 4. Repository Contents
+- `app.py`: Streamlit web interface and report rendering
+- `chatbot.py`: AI Clinical Advisor chatbot integration
+- `file_utils.py`: WFDB file loading and preprocessing utilities
+- `inference.py`: End-to-end inference pipeline, feature extraction, recommendation logic
+- `ui_components.py`: Streamlit UI components and layout helpers
+- `requirements.txt`: Python dependencies (includes TensorFlow, scikit-learn, google-genai for AI chatbot)
+- `models/`: Directory containing all trained models, selectors, and scalers:
+  - `extractor_resnet.keras`: 1D ResNet feature extractor
+  - `extractor_eegnet.keras`: EEGNet-style feature extractor
+  - `extractor_bilstm.keras`: Attention-BiLSTM feature extractor
+  - `extractor_cwt_cnn.keras`: CWT-CNN feature extractor
+  - `brugada_scaler.pkl`: StandardScaler fitted on training data
+  - `brugada_selector.pkl`: Feature selector fitted on training data
+  - `brugada_meta_learner.pkl`: Trained meta-learner for final risk probability
+
+## 5. Model Architecture and Inference Pipeline
 The deployed pipeline in `inference.py` follows this sequence:
 
 1. WFDB loading and preprocessing
@@ -68,7 +159,7 @@ The deployed pipeline in `inference.py` follows this sequence:
   - Predicted-class support
   - Evidence table and recommendation tier
 
-## 4. Training Method Summary
+## 6. Training Method Summary
 Training was performed in a separate notebook workflow (artifact generation already completed and included in this folder as `.keras` and `.pkl` files).
 
 High-level training strategy:
@@ -79,9 +170,9 @@ High-level training strategy:
 - Meta-learning with a soft-voting/stacking style ensemble of classical models
 - Threshold scanning and clinical uncertainty analysis during evaluation
 
-Deployed artifacts in this folder are already trained and ready for inference.
+Deployed artifacts in the `models/` directory are already trained and ready for inference.
 
-## 5. Explainability and Clinical Reporting
+## 7. Explainability and Clinical Reporting
 The web report provides:
 - 12-lead ECG visualization with V1 to V3 highlighted windows in relevant cases
 - Decision margin chart showing threshold and borderline-positive zone
@@ -96,7 +187,7 @@ The web report provides:
   - Gray-Zone Priority Queue
   - Discordant Cases Queue
 
-## 6. Web Logic Summary
+## 8. Web Logic Summary
 Single-record output logic is designed to be explicit:
 - Risk status from model probability and threshold policy
 - Borderline protocol card appears for borderline cases or near-threshold distance
@@ -107,7 +198,7 @@ Batch logic:
 - Prioritization order is recommendation tier first, then probability, then decision stability
 - Batch schema includes recommendation tier and discordance flag to support review workflow
 
-## 7. Is the Current Version Enough?
+## 9. Is the Current Version Enough?
 For demo and competition-oriented deployment, this implementation is strong and coherent.
 
 For production-like clinical deployment, additional work is recommended:
@@ -115,123 +206,6 @@ For production-like clinical deployment, additional work is recommended:
 - Governance around threshold policy and escalation pathway
 - Data quality controls and audit logging
 - Regulatory, legal, and safety review
-
-## 8. Environment Setup and First Run (Fresh Pull)
-This section assumes a new machine or a clean environment.
-
-### 8.1 Prerequisites
-- Python 3.10 or 3.11 recommended
-- pip latest available
-- Git installed
-
-### 8.2 Clone and enter project
-PowerShell (Windows):
-
-```powershell
-git clone <your-repository-url>
-cd Brugada
-```
-
-### 8.3 Create and activate virtual environment
-PowerShell (Windows):
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-```
-
-If execution policy blocks activation:
-
-```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\.venv\Scripts\Activate.ps1
-```
-
-### 8.4 Install dependencies
-
-```powershell
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-```
-
-**Note:** This will automatically install `google-genai` (required for the AI Chatbot advisor feature). All dependencies including TensorFlow, scikit-learn, and generative AI libraries are included in `requirements.txt`.
-
-
-
-### 8.5 Verify core files exist
-Confirm these files are present before running:
-- `extractor_resnet.keras`
-- `extractor_eegnet.keras`
-- `extractor_bilstm.keras`
-- `extractor_cwt_cnn.keras`
-- `brugada_scaler.pkl`
-- `brugada_selector.pkl`
-- `brugada_meta_learner.pkl`
-
-### 8.6 Set up Gemini API key (For AI-Powered Chatbot)
-
-The Gemini API is used for the optional AI Clinical Advisor chatbot feature. It's powered by Google's `google-genai` library (already included in `requirements.txt`).
-
-To enable the chatbot, you need a Gemini API key:
-
-1. Go to [Google AI Studio](https://aistudio.google.com/apikey)
-2. Create a new API key
-3. Create a `.streamlit/secrets.toml` file in the Brugada folder with:
-
-```toml
-GEMINI_API_KEY = "your-api-key-here"
-```
-
-Alternatively, set the environment variable:
-
-```powershell
-$env:GEMINI_API_KEY = "your-api-key-here"
-```
-
-**Note:** The app will still run without an API key, but the AI Chatbot feature will be unavailable.
-
-### 8.7 Start web app
-
-```powershell
-python -m streamlit run app.py
-```
-
-Open the local URL shown by Streamlit, usually:
-- `http://localhost:8501`
-
-## 9. Routine Daily Run (Environment Already Set)
-If setup is already done and dependencies are installed:
-
-### 9.1 Open project and activate venv
-
-```powershell
-cd Brugada
-.\.venv\Scripts\Activate.ps1
-```
-
-### 9.2 Optional cache clear
-Use this if you suspect stale Streamlit state:
-
-```powershell
-streamlit cache clear
-```
-
-### 9.3 Run app
-
-```powershell
-python -m streamlit run app.py
-```
-
-### 9.4 Use the app
-Single-record mode:
-- Upload matched `.hea` and `.dat`
-- Click Run Diagnosis
-- Review risk metrics, recommendation, and evidence
-
-Batch mode:
-- Upload multiple `.hea` and `.dat`
-- Click Run Batch Risk List
-- Review tiered queues and discordant cases first
 
 ## 10. Input Data Requirements
 - Input records must be valid WFDB pairs (`.hea` with matching `.dat`)
@@ -265,10 +239,10 @@ TypeError: Could not deserialize class 'Functional' because its parent module ke
 
 **Solution:**
 1. Verify TensorFlow version: `python -c "import tensorflow; print(tensorflow.__version__)"`
-2. If not 2.13.0, reinstall the correct version:
+2. If not 2.21.0, reinstall the correct version:
    ```powershell
    pip uninstall tensorflow -y
-   pip install tensorflow==2.13.0
+   pip install tensorflow==2.21.0
    ```
 3. Optionally clear Keras cache:
    ```powershell
@@ -283,7 +257,7 @@ If your editor reports unresolved imports for tensorflow, cv2, pywt, or neurokit
 - Restart VS Code Python language server if needed
 
 ### 12.4 Streamlit starts but inference fails
-- Verify all `.keras` and `.pkl` artifact files are present in project root
+- Verify all `.keras` and `.pkl` artifact files are present in the `models/` directory
 - Ensure uploaded input includes both `.hea` and `.dat`
 - Check file naming consistency for WFDB pair
 
@@ -302,14 +276,11 @@ If your editor reports unresolved imports for tensorflow, cv2, pywt, or neurokit
 - Threshold policy is intentionally recall-oriented and may increase false positives
 - The tool is not a substitute for cardiologist interpretation or formal diagnosis
 
-## 14. Suggested Next Improvements
+## 14. Potential Improvements
 - Report export (PDF/CSV) for clinician handoff
 - Additional data-quality checks before inference
 - Configurable threshold policy profiles (screening, balanced, rule-out)
 - External validation dashboard and calibration metrics
 
-## 15. License and Clinical Disclaimer
-Use according to your repository license.
-
-Clinical disclaimer:
+## 15. Clinical Disclaimer
 This software is for decision support and research workflow assistance. It does not provide a definitive diagnosis and must be used with qualified clinical judgment.
