@@ -506,7 +506,8 @@ with right:
                         "user_q": user_q,
                         "response": None
                     })
-                    st.session_state.user_question_input = ""
+                    # Clear using a clear_trigger key to force a re-render without hitting the widget exception
+                    st.session_state.clear_input_trigger = True
             
             def reset_chat():
                 st.session_state.chatbot.reset_conversation()
@@ -540,7 +541,13 @@ with right:
             st.write("**Ask follow-up questions:**")
             
             # Using a form ensures that hitting "Enter" in the text_input triggers the submit button
-            with st.form(key="chat_form", clear_on_submit=False):
+            
+            # Clear logic via key manipulation to bypass Streamlit form bugs
+            if st.session_state.get('clear_input_trigger', False):
+                st.session_state.user_question_input = ""
+                st.session_state.clear_input_trigger = False
+                
+            with st.form(key="chat_form", clear_on_submit=True):
                 col_input, col_send = st.columns([4, 1])
                 
                 with col_input:
@@ -552,9 +559,7 @@ with right:
                     )
                 
                 with col_send:
-                    # SVGs can't be rendered directly in a Streamlit button label natively.
-                    # We will use text that describes the action properly.
-                    submitted = st.form_submit_button("Send ↗", use_container_width=True, type="primary")
+                    submitted = st.form_submit_button("Send ↩︎", use_container_width=True, type="primary")
                     
                 if submitted:
                     send_message()
