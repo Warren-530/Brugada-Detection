@@ -154,11 +154,34 @@ with left:
                             st.session_state.current_view = stem_name
             else:
                 for stem in list(pairs.keys()):
+                    card_svg = f"<span title='Valid pair ready for diagnosis' style='cursor: help;'>{SVG_FOLDER}</span>"
+                    
+                    if len(pairs) == 1 and st.session_state.get('last_ml_result') is not None:
+                        result = st.session_state.last_ml_result
+                        if isinstance(result, dict):
+                            is_detected = result.get("label", "") == "Brugada Syndrome Detected"
+                            is_urgent = result.get("recommendation_tier") in {"urgent_cardiology_review", "urgent_review_repeat_ecg_quality_check"}
+                            is_gray = result.get("gray_zone", False)
+                        else:
+                            is_detected = getattr(result, "label", "") == "Brugada Syndrome Detected"
+                            is_urgent = getattr(result, "recommendation_tier", "") in {"urgent_cardiology_review", "urgent_review_repeat_ecg_quality_check"}
+                            is_gray = getattr(result, "gray_zone", False)
+                        
+                        if is_detected:
+                            status_msg = "Brugada Syndrome Detected"
+                            if is_urgent:
+                                status_msg += " (Urgent)"
+                            elif is_gray:
+                                status_msg += " (Gray-zone)"
+                            card_svg = f"<span title='{status_msg}' style='cursor: help;'>{SVG_WARNING}</span>"
+                        else:
+                            card_svg = f"<span title='No Brugada Syndrome Detected'>{SVG_FOLDER}</span>"
+                            
                     col1, col2 = st.columns([6, 1])
                     with col1:
                         st.markdown(
                             f"<div class='record-card'>"
-                            f"<div style='display: flex; align-items: center;'><span title='Valid pair ready for diagnosis' style='cursor: help;'>{SVG_FOLDER}</span> <span style='font-weight: 600;'>{stem}</span></div>"
+                            f"<div style='display: flex; align-items: center;'>{card_svg} <span style='font-weight: 600;'>{stem}</span></div>"
                             f"<div><span class='record-tag'>.hea</span><span class='record-tag'>.dat</span></div>"
                             f"</div>",
                             unsafe_allow_html=True
@@ -225,6 +248,7 @@ with right:
                         if st.session_state.chatbot_ready:
                             st.session_state.chatbot.reset_conversation()
                             st.session_state.conversation_history = []
+                        st.rerun()
                 except Exception as exc:  # noqa: BLE001
                     st.exception(exc)
             else: # is_batch
