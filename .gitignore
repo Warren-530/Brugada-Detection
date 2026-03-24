@@ -27,3 +27,4 @@ Thumbs.db
 # Optional local env files
 .env
 .env.*
+.streamlit/secrets.toml
