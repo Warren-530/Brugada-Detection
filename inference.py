@@ -308,10 +308,10 @@ def load_all_models():
     
     model_names = ['resnet', 'blstm', 'eegnet', 'cwt_cnn']
     model_files = {
-        'resnet': 'extractor_resnet.keras',
-        'blstm': 'extractor_bilstm.keras',
-        'eegnet': 'extractor_eegnet.keras',
-        'cwt_cnn': 'extractor_cwt_cnn.keras'
+        'resnet': os.path.join('models', 'extractor_resnet.keras'),
+        'blstm': os.path.join('models', 'extractor_bilstm.keras'),
+        'eegnet': os.path.join('models', 'extractor_eegnet.keras'),
+        'cwt_cnn': os.path.join('models', 'extractor_cwt_cnn.keras')
     }
     
     for model_key, model_file in model_files.items():
@@ -356,9 +356,9 @@ def load_all_models():
     
     try:
         print("  Loading classifier models...")
-        MODELS['scaler']   = joblib.load('brugada_scaler.pkl')
-        MODELS['selector'] = joblib.load('brugada_selector.pkl')
-        MODELS['meta']     = joblib.load('brugada_meta_learner.pkl')
+        MODELS['scaler']   = joblib.load(os.path.join('models', 'brugada_scaler.pkl'))
+        MODELS['selector'] = joblib.load(os.path.join('models', 'brugada_selector.pkl'))
+        MODELS['meta']     = joblib.load(os.path.join('models', 'brugada_meta_learner.pkl'))
         print("    [OK] Scaler, selector, and meta-learner loaded successfully")
     except Exception as e:
         print(f"    [ERROR] Error loading classifier models: {str(e)}")
@@ -384,9 +384,9 @@ def load_all_models():
         outputs=MODELS['cwt_cnn'].get_layer(FEATURE_LAYER_BY_MODEL['cwt_cnn']).output,
     )
     
-    MODELS['scaler']   = joblib.load('brugada_scaler.pkl')
-    MODELS['selector'] = joblib.load('brugada_selector.pkl')
-    MODELS['meta']     = joblib.load('brugada_meta_learner.pkl')
+    MODELS['scaler']   = joblib.load(os.path.join('models', 'brugada_scaler.pkl'))
+    MODELS['selector'] = joblib.load(os.path.join('models', 'brugada_selector.pkl'))
+    MODELS['meta']     = joblib.load(os.path.join('models', 'brugada_meta_learner.pkl'))
     print("All models loaded successfully!")
 
 # =============================================================================
