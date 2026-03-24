@@ -34,8 +34,7 @@ class BrugadaChatbot:
         self.system_prompt = (
             "You are a clinical AI assistant specializing in Brugada syndrome. "
             "Provide evidence-based decision support based on ECG analysis. "
-            "Always emphasize this is a decision support tool for physicians only, "
-            "not a diagnostic or treatment recommendation."
+            "DO NOT include general medical disclaimers in your responses, as they are already prominently displayed in the UI."
         )
 
         # Try to initialize with best available model
@@ -43,7 +42,7 @@ class BrugadaChatbot:
         if not self.model:
             # Fallback to first candidate
             self.model = self.MODEL_CANDIDATES[0]
-            print(f"📌 Using fallback model: {self.model}")
+            print(f"Using fallback model: {self.model}")
 
         self.chat_history = []
         # Cache for ML result interpretations to avoid repeated API calls
@@ -88,13 +87,17 @@ class BrugadaChatbot:
         # Return cached result if available (save quotas!)
         if cache_key in self._advice_cache:
             cached = self._advice_cache[cache_key]
-            print(f"[Cache Hit ✅] Reusing cached advice for {label} (prob ~{prob_rounded})")
+            print(f"[Cache Hit] Reusing cached advice for {label} (prob ~{prob_rounded})")
             return cached
 
         prompt = (
             f"Clinical case: ML model classified this ECG as '{label}' "
-            f"with probability {prob:.4f}. Provide a comprehensive clinical interpretation "
-            f"and next steps for physician review."
+            f"with probability {prob:.4f}.\n"
+            f"Provide a structured clinical interpretation broken perfectly into these three exact Markdown headings:\n"
+            f"### Interpretation\n"
+            f"### Key Considerations\n"
+            f"### Recommended Next Steps\n\n"
+            f"Keep paragraphs very concise, use bullet points, and avoid any additional introductory or concluding text."
         )
 
         advice = self._send_with_retry(prompt, ml_result)
@@ -139,10 +142,9 @@ class BrugadaChatbot:
                 # For quota errors, retry with exponential backoff (longer wait times)
                 if is_quota_error and attempt < retries - 1:
                     wait = min(2 ** (attempt + 2), 60)  # Increased wait: 4s, 8s, 16s, 32s, 60s...
-                    print(
-                        f"⏳ Quota limit hit. Waiting {wait}s before retry "
-                        f"({attempt + 1}/{retries})..."
-                    )
+                    msg = f"Quota limit hit. Waiting {wait}s before retry ({attempt + 1}/{retries})..."
+                    print(msg)
+                    st.toast(msg) # Streamlit toast to show retrying without blocking
                     time.sleep(wait)
                     continue
                 elif is_quota_error and ml_result:
@@ -150,15 +152,15 @@ class BrugadaChatbot:
                     return self._offline_fallback(ml_result)
                 elif is_quota_error:
                     return (
-                        "❌ API quota exceeded. The system is rate-limited. "
-                        "Please try again in a few minutes. "
+                        "**API Quota Exceeded**\n\n"
+                        "The system is rate-limited. Please try again in a few minutes. "
                         "Run a diagnosis for offline guidance."
                     )
 
                 # For 404 model not found, that's a configuration issue
                 if "404" in str(e) and "not found" in error_str:
                     return (
-                        f"❌ Model configuration error: {str(e)[:80]}\n\n"
+                        f"**Model Configuration Error:** {str(e)[:80]}\n\n"
                         f"The AI model is not available. "
                         f"Please check at console.cloud.google.com that your API key has access "
                         f"to the Generative AI models."
@@ -166,7 +168,7 @@ class BrugadaChatbot:
 
                 # Other errors
                 return (
-                    f"❌ Advisor Error: {str(e)[:100]}\n\n"
+                    f"**Advisor Error:** {str(e)[:100]}\n\n"
                     f"Try these steps:\n"
                     f"1. Verify GEMINI_API_KEY in `.streamlit/secrets.toml`\n"
                     f"2. Check API quota at console.cloud.google.com\n"
@@ -181,7 +183,7 @@ class BrugadaChatbot:
         label = self._get_val(ml_result, "label", "Unknown")
 
         return (
-            f"### ⚠️ AI Advisor - Quota Exceeded\n\n"
+            f"### AI Advisor - Quota Exceeded\n\n"
             f"The Gemini API has hit its rate limit. The system will resume "
             f"providing AI guidance shortly.\n\n"
             f"**Your ECG Analysis:**\n"
