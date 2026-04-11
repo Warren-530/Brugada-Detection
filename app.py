@@ -720,8 +720,9 @@ with right:
             
             with chat_container:
                 if st.session_state.conversation_history:
-                    for i, exchange in enumerate(st.session_state.conversation_history):
-                        st.markdown(f"**You:** {exchange['user_q']}")
+                    for exchange in st.session_state.conversation_history:
+                        with st.chat_message("user"):
+                            st.markdown(exchange["user_q"])
                         
                         if exchange['response'] is None:
                             with st.spinner("Generating response..."):
@@ -733,10 +734,8 @@ with right:
                                     exchange['response'] = f"**Error:** {str(e)}"
                                     st.rerun()
                         else:
-                            st.markdown(f"**Advisor:** {exchange['response']}")
-                            
-                        if i < len(st.session_state.conversation_history) - 1:
-                            st.divider()
+                            with st.chat_message("assistant"):
+                                st.markdown(exchange['response'])
                 else:
                     st.caption("No questions yet. Ask something below!")
 
