@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 import scipy.signal as signal
 import wfdb
+from pathlib import Path
 
 from brugada.inference.features import (
     _build_clinician_explain,
@@ -19,6 +20,91 @@ from brugada.inference.models import (
     LeadSpatialAttention,
     load_all_models,
 )
+
+
+def extract_patient_metadata(record_path: str) -> dict:
+    """Extract patient metadata from WFDB record header."""
+    record_path = Path(record_path)
+
+    # First try to read metadata directly from .hea file
+    hea_path = record_path.with_suffix('.hea')
+    patient_info = {}
+    record_name = record_path.name
+
+    if hea_path.exists():
+        try:
+            with open(hea_path, 'r', encoding='utf-8', errors='ignore') as f:
+                lines = f.readlines()
+
+            for line in lines:
+                line = line.strip()
+                if line.startswith('#') and ':' in line:
+                    # Parse comment lines like "# Patient: PT-001"
+                    comment_content = line[1:].strip()  # Remove #
+                    if ":" in comment_content:
+                        key, value = comment_content.split(":", 1)
+                        key = key.strip().lower()
+                        value = value.strip()
+                        patient_info[key] = value
+        except Exception:
+            pass  # Ignore file reading errors
+
+    # Try to use WFDB to get additional metadata (without reading signal data)
+    try:
+        # Use rdheader to avoid reading signal data
+        header = wfdb.rdheader(str(record_path))
+
+        metadata = {
+            "record_name": header.record_name,
+            "n_sig": header.n_sig,
+            "fs": header.fs,
+            "sig_len": header.sig_len if hasattr(header, 'sig_len') else None,
+            "units": header.units,
+            "sig_name": header.sig_name,
+            "comments": header.comments,
+        }
+
+        # Add any comments from WFDB
+        if header.comments:
+            for comment in header.comments:
+                comment = comment.strip()
+                if ":" in comment:
+                    key, value = comment.split(":", 1)
+                    key = key.strip().lower()
+                    value = value.strip()
+                    patient_info[key] = value
+
+    except Exception:
+        # Fallback metadata if WFDB fails
+        metadata = {
+            "record_name": record_name,
+            "error": "WFDB header read failed",
+        }
+
+    metadata["patient_info"] = patient_info if patient_info else None
+
+    # Try to extract patient ID from various sources
+    patient_id = None
+
+    # Check parsed patient info for patient ID
+    for key in ["patient", "id", "patient_id", "subject", "patient id"]:
+        if key in patient_info:
+            patient_id = patient_info[key]
+            break
+
+    # Check if record name looks like a patient ID
+    if not patient_id and record_name:
+        # If record name contains numbers or looks like an ID, use it
+        if any(char.isdigit() for char in record_name):
+            patient_id = record_name
+
+    # Fallback to record name if no patient ID found
+    if not patient_id:
+        patient_id = record_name
+
+    metadata["extracted_patient_id"] = patient_id
+
+    return metadata
 
 
 def preprocess_signal(record_path: str) -> tuple[np.ndarray, float]:

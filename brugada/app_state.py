@@ -8,7 +8,8 @@ def ensure_app_state() -> None:
     """Initialize all Streamlit session keys used by the app."""
     if "record_store_ready" not in st.session_state:
         try:
-            init_record_store()
+            # Use temporary storage mode - clear data on app start
+            init_record_store(clear_existing=True)
             st.session_state.record_store_ready = True
             st.session_state.record_store_error = ""
         except Exception as exc:  # noqa: BLE001

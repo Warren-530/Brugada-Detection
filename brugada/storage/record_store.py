@@ -122,7 +122,12 @@ def _ensure_records_feedback_columns(conn: sqlite3.Connection) -> None:
             conn.execute(statement)
 
 
-def init_record_store() -> None:
+def init_record_store(clear_existing: bool = False) -> None:
+    """Initialize the record store database.
+
+    Args:
+        clear_existing: If True, clears all existing data for temporary storage mode.
+    """
     with _connect() as conn:
         conn.execute(
             """
@@ -155,6 +160,17 @@ def init_record_store() -> None:
             """
         )
         _ensure_records_feedback_columns(conn)
+
+        # Clear existing data if requested (temporary storage mode)
+        if clear_existing:
+            conn.execute("DELETE FROM records")
+            conn.execute("DELETE FROM audit_log")
+            # Also clear payload files
+            import shutil
+            if PAYLOAD_DIR.exists():
+                shutil.rmtree(PAYLOAD_DIR)
+            PAYLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS audit_log (

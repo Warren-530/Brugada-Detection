@@ -72,20 +72,30 @@ def render_records_tab():
     not_sick_count = int(total_in_view - sick_count)
     gray_zone_count = int(gray_zone_mask.sum())
 
+    # Get patient_id from sidebar Optional Metadata
+    sidebar_patient_id = st.session_state.get("patient_id_input", "").strip() or None
+
+    # Auto-fill empty patient_id cells with sidebar patient_id
+    if sidebar_patient_id:
+        records_df["patient_id"] = records_df["patient_id"].fillna(sidebar_patient_id)
+        records_df["patient_id"] = records_df["patient_id"].apply(
+            lambda x: sidebar_patient_id if (x == "" or pd.isna(x)) else x
+        )
+
     editor_df = pd.DataFrame(
         {
             "select": False,
             "record_uid": records_df["record_uid"],
-            "timestamp_utc": records_df["created_at"],
             "record": records_df["record_name"],
             "patient_id": records_df["patient_id"],
             "doctor_feedback": records_df["doctor_feedback"],
             "doctor_feedback_note": records_df["doctor_feedback_note"],
             "label": records_df["label"],
             "risk_score_%": records_df["risk_score_pct"],
-            "decision_stability_pp": records_df["boundary_distance_pp"],
             "recommendation_tier": records_df["recommendation_tier"],
             "status": records_df["status"],
+            "timestamp_utc": records_df["created_at"],
+            "decision_stability_pp": records_df["boundary_distance_pp"],
             "evidence_summary": records_df["evidence_summary"],
         }
     )
@@ -152,6 +162,10 @@ def render_records_tab():
     selected_items = []
     summary_selected_uid = None
     with st.expander("Records Table, Patient ID Edits, and Bulk Actions", expanded=True):
+        # Show sidebar patient_id status
+        if sidebar_patient_id:
+            st.info(f"📋 **Current Patient ID from Optional Metadata**: `{sidebar_patient_id}` - Empty patient_id fields will use this value")
+        
         status_display = st.radio(
             "Status Filter",
             ["Active", "Archived", "Deleted", "All"],
@@ -197,8 +211,8 @@ def render_records_tab():
         )
 
         original_patient_by_uid = {
-            str(item["record_uid"]): str(item.get("patient_id", "") or "")
-            for item in records
+            str(uid): str(pid or "")
+            for uid, pid in zip(records_df["record_uid"], records_df["patient_id"])
         }
         original_feedback_by_uid = {
             str(item["record_uid"]): str(item.get("doctor_feedback", "") or "")
