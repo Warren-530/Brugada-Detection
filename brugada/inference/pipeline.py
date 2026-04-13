@@ -133,6 +133,23 @@ def predict_from_record(record_path: str) -> dict:
     """Core multi-view stacking inference pipeline."""
     load_all_models()
 
+    required_runtime_keys = {
+        "resnet_feat",
+        "eegnet_feat",
+        "blstm_feat",
+        "cwt_feat",
+        "scaler",
+        "selector",
+        "meta",
+    }
+    missing_runtime_keys = sorted(required_runtime_keys.difference(MODELS.keys()))
+    if missing_runtime_keys:
+        raise RuntimeError(
+            "Model pipeline is not fully initialized. Missing keys: "
+            f"{', '.join(missing_runtime_keys)}. "
+            "Restart the app and ensure scikit-learn==1.6.1 with all model artifacts in models/."
+        )
+
     base_signal, fs = preprocess_signal(record_path)
 
     signal_1d = np.expand_dims(base_signal, axis=0).astype(np.float32)

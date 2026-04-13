@@ -1,7 +1,10 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
+from matplotlib.ticker import MultipleLocator
+from plotly.subplots import make_subplots
 
 # =============================================================================
 # UI Assets (SVGs & CSS)
@@ -375,6 +378,100 @@ def _trim_trailing_quiet_tail(signal: np.ndarray, fs: float) -> np.ndarray:
     end_idx = min(signal.shape[0], max(last_active + safety_tail, min_keep))
     return signal[:end_idx, :]
 
+
+def _lead_index_lookup(lead_names: list[str]) -> dict[str, int]:
+    lookup: dict[str, int] = {}
+    for idx, lead in enumerate(lead_names):
+        lead_name = str(lead).strip()
+        if lead_name:
+            lookup[lead_name] = idx
+    return lookup
+
+
+def _ecg_ylim(signal: np.ndarray, lead_indices: list[int]) -> tuple[float, float]:
+    if not lead_indices:
+        return -1.0, 1.0
+
+    selected = signal[:, lead_indices]
+    y_min = float(np.nanmin(selected))
+    y_max = float(np.nanmax(selected))
+
+    if not np.isfinite(y_min) or not np.isfinite(y_max):
+        return -1.0, 1.0
+
+    span = max(y_max - y_min, 0.2)
+    pad = max(0.15, span * 0.08)
+    y_min = float(np.floor((y_min - pad) / 0.5) * 0.5)
+    y_max = float(np.ceil((y_max + pad) / 0.5) * 0.5)
+
+    if y_max - y_min < 1.0:
+        center = 0.5 * (y_max + y_min)
+        y_min = center - 0.5
+        y_max = center + 0.5
+
+    return y_min, y_max
+
+
+def _apply_ecg_paper_grid(ax, x_max: float, y_min: float, y_max: float) -> None:
+    ax.set_xlim(0.0, x_max)
+    ax.set_ylim(y_min, y_max)
+    ax.xaxis.set_major_locator(MultipleLocator(0.2))
+    ax.xaxis.set_minor_locator(MultipleLocator(0.04))
+    ax.yaxis.set_major_locator(MultipleLocator(0.5))
+    ax.yaxis.set_minor_locator(MultipleLocator(0.1))
+    ax.grid(which="major", color="#E6A3A3", linewidth=0.60, alpha=0.85)
+    ax.grid(which="minor", color="#F7D2D2", linewidth=0.35, alpha=0.85)
+
+
+def _attention_time_spans(
+    lead_name: str,
+    highlights: dict[str, list[tuple[int, int]]],
+    fs: float,
+    x_max: float,
+) -> list[tuple[float, float]]:
+    if lead_name not in {"V1", "V2", "V3"}:
+        return []
+
+    lead_segments = highlights.get(lead_name, []) if isinstance(highlights, dict) else []
+    if not isinstance(lead_segments, list):
+        return []
+
+    spans: list[tuple[float, float]] = []
+    min_width = 0.02
+    for segment in lead_segments:
+        if not isinstance(segment, (list, tuple)) or len(segment) != 2:
+            continue
+
+        start, end = segment
+        start_t = max(0.0, float(start) / fs)
+        end_t = min(x_max, float(end) / fs)
+        if end_t <= start_t:
+            continue
+
+        if end_t - start_t < min_width:
+            center = 0.5 * (start_t + end_t)
+            start_t = max(0.0, center - (min_width / 2.0))
+            end_t = min(x_max, center + (min_width / 2.0))
+
+        spans.append((start_t, end_t))
+
+    return spans
+
+
+def _render_attention_overlay(
+    ax,
+    lead_name: str,
+    highlights: dict[str, list[tuple[int, int]]],
+    fs: float,
+    x_max: float,
+) -> bool:
+    rendered = False
+    for start_t, end_t in _attention_time_spans(lead_name, highlights, fs, x_max):
+        ax.axvspan(start_t, end_t, color="#FB923C", alpha=0.25, zorder=0.2)
+        rendered = True
+
+    return rendered
+
 def _plot_12_lead(signal: np.ndarray, lead_names: list[str], fs: float, highlights: dict[str, list[tuple[int, int]]]):
     signal = _coerce_ecg_signal(signal)
     if signal is None or signal.size == 0:
@@ -395,33 +492,265 @@ def _plot_12_lead(signal: np.ndarray, lead_names: list[str], fs: float, highligh
 
     n_samples, n_leads = signal.shape
     lead_names = (lead_names + DEFAULT_LEAD_NAMES)[:n_leads]
+    lead_lookup = _lead_index_lookup(lead_names)
 
-    fig, axes = plt.subplots(6, 2, figsize=(14, 12), sharex=True)
-    axes = axes.ravel()
     t = _seconds_axis(n_samples, fs)
-    max_time = t[-1] if n_samples > 1 else (1.0 / fs)
+    max_time = float(t[-1]) if n_samples > 1 else (1.0 / float(fs))
 
-    for i in range(min(12, n_leads)):
-        ax = axes[i]
-        lead = lead_names[i]
-        ax.plot(t, signal[:, i], linewidth=0.8, color="#0F172A")
-        ax.set_title(lead, fontsize=10, loc="left")
-        ax.grid(alpha=0.15)
+    # Standard clinical display order (3 x 4) + long rhythm strip (Lead II).
+    clinical_layout = [
+        ["I", "aVR", "V1", "V4"],
+        ["II", "aVL", "V2", "V5"],
+        ["III", "aVF", "V3", "V6"],
+    ]
+    plotted_indices = [
+        lead_lookup[lead]
+        for row in clinical_layout
+        for lead in row
+        if lead in lead_lookup
+    ]
+    y_min, y_max = _ecg_ylim(signal, plotted_indices)
 
-        if lead in {"V1", "V2", "V3"} and lead in highlights:
-            for start, end in highlights[lead]:
-                start_t = max(0.0, start / fs)
-                end_t = min(max_time, end / fs)
-                if end_t > start_t:
-                    ax.axvspan(start_t, end_t, color="#EF4444", alpha=0.22)
+    fig = plt.figure(figsize=(18, 11.5), constrained_layout=True)
+    gs = fig.add_gridspec(4, 4, height_ratios=[1.0, 1.0, 1.0, 1.2], hspace=0.12, wspace=0.08)
 
-    for j in range(min(12, n_leads), 12):
-        axes[j].axis("off")
+    highlighted_count = 0
+    for row_idx, row in enumerate(clinical_layout):
+        for col_idx, lead_name in enumerate(row):
+            ax = fig.add_subplot(gs[row_idx, col_idx])
 
-    fig.suptitle("12-lead ECG overview (V1-V3 highlighted attention zones)", fontsize=13, y=0.995)
-    fig.supxlabel("Time (s)")
-    fig.supylabel("Normalized amplitude")
-    fig.tight_layout()
+            lead_idx = lead_lookup.get(lead_name)
+            if lead_idx is None:
+                ax.axis("off")
+                ax.text(0.5, 0.5, f"{lead_name} unavailable", ha="center", va="center", fontsize=8)
+                continue
+
+            ax.plot(t, signal[:, lead_idx], linewidth=0.9, color="#334155", zorder=1.0)
+            if _render_attention_overlay(ax, lead_name, highlights, fs, max_time):
+                highlighted_count += 1
+
+            _apply_ecg_paper_grid(ax, max_time, y_min, y_max)
+            ax.set_title(lead_name, fontsize=10, fontweight="bold", loc="left", pad=2.0)
+            ax.tick_params(axis="both", labelsize=7)
+
+            if col_idx == 0:
+                ax.set_ylabel("mV", fontsize=8)
+            else:
+                ax.set_ylabel("")
+
+            if row_idx < 2:
+                ax.tick_params(labelbottom=False)
+
+    rhythm_ax = fig.add_subplot(gs[3, :])
+    rhythm_idx = lead_lookup.get("II")
+    if rhythm_idx is None and lead_lookup:
+        rhythm_idx = next(iter(lead_lookup.values()))
+
+    if rhythm_idx is not None:
+        rhythm_lead = "II" if "II" in lead_lookup else lead_names[rhythm_idx]
+        rhythm_ax.plot(t, signal[:, rhythm_idx], linewidth=0.95, color="#1F2937", zorder=1.0)
+        _apply_ecg_paper_grid(rhythm_ax, max_time, y_min, y_max)
+        rhythm_ax.set_title(f"Rhythm Strip - Lead {rhythm_lead}", fontsize=10, fontweight="bold", loc="left", pad=3.0)
+        rhythm_ax.set_xlabel("Time (s)", fontsize=9)
+        rhythm_ax.set_ylabel("mV", fontsize=9)
+        rhythm_ax.tick_params(axis="both", labelsize=8)
+    else:
+        rhythm_ax.axis("off")
+        rhythm_ax.text(0.5, 0.5, "Rhythm strip unavailable", ha="center", va="center", fontsize=10)
+
+    if highlighted_count > 0:
+        title = "12-lead ECG clinical layout (V1-V3 highlighted attention zones)"
+    else:
+        title = "12-lead ECG clinical layout"
+    fig.suptitle(title, fontsize=13, fontweight="bold")
+
+    return fig
+
+
+def _plot_12_lead_interactive(signal: np.ndarray, lead_names: list[str], fs: float, highlights: dict[str, list[tuple[int, int]]]):
+    def _empty_figure(message: str):
+        fig = go.Figure()
+        fig.add_annotation(
+            x=0.5,
+            y=0.5,
+            xref="paper",
+            yref="paper",
+            text=message,
+            showarrow=False,
+            font=dict(size=15, color="#334155"),
+        )
+        fig.update_xaxes(visible=False)
+        fig.update_yaxes(visible=False)
+        fig.update_layout(template="plotly_white", height=420, margin=dict(l=20, r=20, t=40, b=20))
+        return fig
+
+    signal = _coerce_ecg_signal(signal)
+    if signal is None or signal.size == 0:
+        return _empty_figure("ECG signal unavailable for plotting.")
+
+    if fs <= 0:
+        fs = 500.0
+
+    signal = _trim_trailing_quiet_tail(signal, fs)
+    if signal.size == 0 or signal.ndim != 2:
+        return _empty_figure("ECG signal unavailable for plotting.")
+
+    n_samples, n_leads = signal.shape
+    lead_names = (lead_names + DEFAULT_LEAD_NAMES)[:n_leads]
+    lead_lookup = _lead_index_lookup(lead_names)
+
+    t = _seconds_axis(n_samples, fs)
+    max_time = float(t[-1]) if n_samples > 1 else (1.0 / float(fs))
+
+    clinical_layout = [
+        ["I", "aVR", "V1", "V4"],
+        ["II", "aVL", "V2", "V5"],
+        ["III", "aVF", "V3", "V6"],
+    ]
+    plotted_indices = [
+        lead_lookup[lead]
+        for row in clinical_layout
+        for lead in row
+        if lead in lead_lookup
+    ]
+    y_min, y_max = _ecg_ylim(signal, plotted_indices)
+
+    rhythm_idx = lead_lookup.get("II")
+    if rhythm_idx is None and lead_lookup:
+        rhythm_idx = next(iter(lead_lookup.values()))
+    rhythm_lead = "II" if "II" in lead_lookup else (lead_names[rhythm_idx] if rhythm_idx is not None else "N/A")
+
+    fig = make_subplots(
+        rows=4,
+        cols=4,
+        specs=[
+            [{}, {}, {}, {}],
+            [{}, {}, {}, {}],
+            [{}, {}, {}, {}],
+            [{"colspan": 4}, None, None, None],
+        ],
+        row_heights=[0.22, 0.22, 0.22, 0.34],
+        horizontal_spacing=0.02,
+        vertical_spacing=0.06,
+        subplot_titles=[lead for row in clinical_layout for lead in row] + [f"Rhythm Strip - Lead {rhythm_lead}"],
+    )
+
+    highlighted_count = 0
+    for row_idx, row in enumerate(clinical_layout, start=1):
+        for col_idx, lead_name in enumerate(row, start=1):
+            lead_idx = lead_lookup.get(lead_name)
+            if lead_idx is None:
+                continue
+
+            fig.add_trace(
+                go.Scatter(
+                    x=t,
+                    y=signal[:, lead_idx],
+                    mode="lines",
+                    line=dict(color="#334155", width=1.05),
+                    showlegend=False,
+                    hovertemplate=f"{lead_name}<br>Time: %{{x:.3f}} s<br>Amplitude: %{{y:.3f}} mV<extra></extra>",
+                ),
+                row=row_idx,
+                col=col_idx,
+            )
+
+            spans = _attention_time_spans(lead_name, highlights, fs, max_time)
+            for start_t, end_t in spans:
+                fig.add_vrect(
+                    x0=start_t,
+                    x1=end_t,
+                    fillcolor="#FB923C",
+                    opacity=0.22,
+                    line_width=0,
+                    row=row_idx,
+                    col=col_idx,
+                )
+            if spans:
+                highlighted_count += 1
+
+            fig.update_xaxes(
+                range=[0.0, max_time],
+                dtick=0.2,
+                showgrid=True,
+                gridcolor="#E6A3A3",
+                gridwidth=0.65,
+                showticklabels=(row_idx == 3),
+                title_text="Time (s)" if row_idx == 3 else None,
+                row=row_idx,
+                col=col_idx,
+            )
+            fig.update_yaxes(
+                range=[y_min, y_max],
+                dtick=0.5,
+                showgrid=True,
+                gridcolor="#E6A3A3",
+                gridwidth=0.65,
+                title_text="mV" if col_idx == 1 else None,
+                row=row_idx,
+                col=col_idx,
+            )
+
+    if rhythm_idx is not None:
+        fig.add_trace(
+            go.Scatter(
+                x=t,
+                y=signal[:, rhythm_idx],
+                mode="lines",
+                line=dict(color="#1F2937", width=1.1),
+                showlegend=False,
+                hovertemplate=f"Lead {rhythm_lead}<br>Time: %{{x:.3f}} s<br>Amplitude: %{{y:.3f}} mV<extra></extra>",
+            ),
+            row=4,
+            col=1,
+        )
+
+        for start_t, end_t in _attention_time_spans(rhythm_lead, highlights, fs, max_time):
+            fig.add_vrect(
+                x0=start_t,
+                x1=end_t,
+                fillcolor="#FB923C",
+                opacity=0.22,
+                line_width=0,
+                row=4,
+                col=1,
+            )
+
+        fig.update_xaxes(
+            range=[0.0, max_time],
+            dtick=0.2,
+            showgrid=True,
+            gridcolor="#E6A3A3",
+            gridwidth=0.65,
+            title_text="Time (s)",
+            row=4,
+            col=1,
+        )
+        fig.update_yaxes(
+            range=[y_min, y_max],
+            dtick=0.5,
+            showgrid=True,
+            gridcolor="#E6A3A3",
+            gridwidth=0.65,
+            title_text="mV",
+            row=4,
+            col=1,
+        )
+
+    title_text = "12-lead ECG clinical layout"
+    if highlighted_count > 0:
+        title_text = "12-lead ECG clinical layout (V1-V3 highlighted attention zones)"
+
+    fig.update_layout(
+        template="plotly_white",
+        height=980,
+        dragmode="zoom",
+        hovermode="x",
+        title=dict(text=title_text, x=0.01, xanchor="left"),
+        uirevision="ecg_zoom_stable",
+        margin=dict(l=30, r=20, t=70, b=30),
+    )
+
     return fig
 
 

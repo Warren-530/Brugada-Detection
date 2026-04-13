@@ -22,6 +22,43 @@ DECISION_THRESHOLD = 0.050
 UPPER_BOUND = 0.060
 DISPLAY_THRESHOLD = 0.350
 
+REQUIRED_MODEL_KEYS = {
+    "resnet",
+    "blstm",
+    "eegnet",
+    "cwt_cnn",
+    "resnet_feat",
+    "blstm_feat",
+    "eegnet_feat",
+    "cwt_feat",
+    "scaler",
+    "selector",
+    "meta",
+}
+REQUIRED_SKLEARN_VERSION = "1.6.1"
+
+
+def _missing_required_model_keys() -> list[str]:
+    return sorted(REQUIRED_MODEL_KEYS.difference(MODELS.keys()))
+
+
+def _ensure_sklearn_compatibility() -> None:
+    try:
+        import sklearn
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            "scikit-learn is required for classifier artifacts. "
+            f"Please install scikit-learn=={REQUIRED_SKLEARN_VERSION}."
+        ) from exc
+
+    sklearn_version = getattr(sklearn, "__version__", "unknown")
+    if sklearn_version != REQUIRED_SKLEARN_VERSION:
+        raise RuntimeError(
+            "Incompatible scikit-learn version detected "
+            f"({sklearn_version}). This deployment requires "
+            f"scikit-learn=={REQUIRED_SKLEARN_VERSION} for model artifact compatibility."
+        )
+
 
 @keras.utils.register_keras_serializable()
 class LeadSpatialAttention(Layer):
@@ -44,8 +81,15 @@ class LeadSpatialAttention(Layer):
 
 def load_all_models():
     """Load all .keras and .pkl files centrally."""
-    if MODELS:
+    missing_keys = _missing_required_model_keys()
+    if not missing_keys:
         return
+
+    if MODELS:
+        print(f"[WARN] Partial model cache detected; reloading missing keys: {', '.join(missing_keys)}")
+        MODELS.clear()
+
+    _ensure_sklearn_compatibility()
 
     print("Initializing Core Models...")
     custom_objs = {"LeadSpatialAttention": LeadSpatialAttention}
@@ -57,23 +101,18 @@ def load_all_models():
         "cwt_cnn": str(APP_ROOT / "models" / "extractor_cwt_cnn.keras"),
     }
 
-    for model_key, model_file in model_files.items():
-        try:
+    classifier_files = {
+        "scaler": APP_ROOT / "models" / "brugada_scaler.pkl",
+        "selector": APP_ROOT / "models" / "brugada_selector.pkl",
+        "meta": APP_ROOT / "models" / "brugada_meta_learner.pkl",
+    }
+
+    try:
+        for model_key, model_file in model_files.items():
             print(f"  Loading {model_file}...")
             MODELS[model_key] = keras.models.load_model(model_file, custom_objects=custom_objs)
             print(f"    [OK] {model_file} loaded successfully")
-        except Exception as e:
-            print(f"    [ERROR] Error loading {model_file}: {str(e)[:100]}")
-            raise ValueError(
-                f"\nFailed to load {model_file}.\n"
-                f"This typically means TensorFlow version is incompatible.\n"
-                f"Please reinstall TensorFlow 2.12.0:\n"
-                f"  pip uninstall tensorflow -y\n"
-                f"  pip install tensorflow==2.12.0\n"
-                f"Then restart the app."
-            )
 
-    try:
         print("  Building feature extraction models...")
         MODELS["resnet_feat"] = keras.Model(
             inputs=MODELS["resnet"].input,
@@ -92,18 +131,37 @@ def load_all_models():
             outputs=MODELS["cwt_cnn"].get_layer(FEATURE_LAYER_BY_MODEL["cwt_cnn"]).output,
         )
         print("    [OK] Feature models built successfully")
-    except Exception as e:
-        print(f"    [ERROR] Error building feature models: {str(e)}")
-        raise
 
-    try:
         print("  Loading classifier models...")
-        MODELS["scaler"] = joblib.load(APP_ROOT / "models" / "brugada_scaler.pkl")
-        MODELS["selector"] = joblib.load(APP_ROOT / "models" / "brugada_selector.pkl")
-        MODELS["meta"] = joblib.load(APP_ROOT / "models" / "brugada_meta_learner.pkl")
+        for key, artifact_path in classifier_files.items():
+            if not artifact_path.exists():
+                raise FileNotFoundError(f"Missing classifier artifact: {artifact_path}")
+            MODELS[key] = joblib.load(artifact_path)
         print("    [OK] Scaler, selector, and meta-learner loaded successfully")
+
+        missing_after_load = _missing_required_model_keys()
+        if missing_after_load:
+            raise RuntimeError(
+                "Model initialization incomplete. Missing keys after load: "
+                f"{', '.join(missing_after_load)}"
+            )
     except Exception as e:
-        print(f"    [ERROR] Error loading classifier models: {str(e)}")
+        MODELS.clear()
+        print(f"    [ERROR] Model initialization failed: {str(e)}")
+        if isinstance(e, FileNotFoundError):
+            raise RuntimeError(
+                "Classifier artifact missing. Ensure these files exist in models/: "
+                "brugada_scaler.pkl, brugada_selector.pkl, brugada_meta_learner.pkl"
+            ) from e
+        if "sklearn" in str(e).lower() or "scikit-learn" in str(e).lower():
+            raise RuntimeError(
+                "Classifier artifact load failed due to scikit-learn compatibility. "
+                f"Install scikit-learn=={REQUIRED_SKLEARN_VERSION} and restart the app."
+            ) from e
+        if any(token in str(e).lower() for token in ["keras", "tensorflow", "layer", "model"]):
+            raise RuntimeError(
+                "Feature extractor loading failed. Reinstall dependencies from requirements.txt and restart the app."
+            ) from e
         raise
 
     print("[OK] All models initialized successfully!")

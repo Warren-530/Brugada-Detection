@@ -130,6 +130,36 @@ class BrugadaChatbot:
             return ml_result.get(key, default)
         return getattr(ml_result, key, default)
 
+    @staticmethod
+    def _safe_int(value, default: int = 0) -> int:
+        try:
+            return int(float(value))
+        except Exception:
+            return default
+
+    @staticmethod
+    def _to_dict(value) -> dict:
+        return value if isinstance(value, dict) else {}
+
+    @staticmethod
+    def _dominant_evidence_tier(clinical_evidence) -> str:
+        if not isinstance(clinical_evidence, list):
+            return "unknown"
+
+        tier_rank = {"weak": 1, "moderate": 2, "strong": 3}
+        dominant = "unknown"
+        dominant_rank = 0
+        for item in clinical_evidence:
+            if not isinstance(item, dict):
+                continue
+            tier = str(item.get("tier", "")).strip().lower()
+            rank = tier_rank.get(tier, 0)
+            if rank > dominant_rank:
+                dominant = tier
+                dominant_rank = rank
+
+        return dominant
+
     def get_advice(self, ml_result: dict) -> str:
         """Generate initial clinical interpretation with aggressive caching to save quota."""
         if ml_result is None:
@@ -137,23 +167,46 @@ class BrugadaChatbot:
 
         prob = float(self._get_val(ml_result, "display_probability", self._get_val(ml_result, "probability", 0.0)))
         threshold = float(self._get_val(ml_result, "display_threshold", 0.35))
-        label = self._get_val(ml_result, "label", "Unknown")
+        label = str(self._get_val(ml_result, "label", "Unknown"))
+        gray_zone = bool(self._get_val(ml_result, "gray_zone", False))
 
-        # Create cache key with wider ranges to increase cache hit rate
-        # Round probability to 0.01 to group similar results together
+        clinician_explain = self._to_dict(self._get_val(ml_result, "clinician_explain", {}))
+        recommendation_tier = str(clinician_explain.get("recommendation_tier", "unknown")).strip().lower()
+        recommendation_tier = recommendation_tier.replace(" ", "_") if recommendation_tier else "unknown"
+
+        evidence_counts = self._to_dict(clinician_explain.get("evidence_counts", {}))
+        strong_count = self._safe_int(evidence_counts.get("strong", 0))
+        moderate_count = self._safe_int(evidence_counts.get("moderate", 0))
+        weak_count = self._safe_int(evidence_counts.get("weak", 0))
+
+        clinical_evidence = self._get_val(ml_result, "clinical_evidence", [])
+        dominant_evidence_tier = self._dominant_evidence_tier(clinical_evidence)
+        evidence_signature = f"s{strong_count}_m{moderate_count}_w{weak_count}"
+
         prob_rounded = round(prob, 2)
-        cache_key = f"{label}_{prob_rounded}"
+        label_key = label.strip().lower().replace(" ", "_")
+        cache_key = (
+            f"{label_key}_{prob_rounded:.2f}"
+            f"_gz{int(gray_zone)}"
+            f"_{recommendation_tier}"
+            f"_{dominant_evidence_tier}"
+            f"_{evidence_signature}"
+        )
         
         # Return cached result if available (save quotas!)
         if cache_key in self._advice_cache:
             cached = self._advice_cache[cache_key]
-            print(f"[Cache Hit] Reusing cached advice for {label} (prob ~{prob_rounded})")
+            print(f"[Cache Hit] Reusing cached advice for key={cache_key}")
             return cached
 
         prompt = (
             f"Clinical case: ML model classified this ECG as '{label}' "
             f"with probability {prob:.4f}.\n"
             f"Use decision threshold {threshold:.2f} when describing risk relative to boundary.\n"
+            f"Gray-zone flag: {'yes' if gray_zone else 'no'}.\n"
+            f"Recommendation tier: {recommendation_tier}.\n"
+            f"Dominant morphology evidence tier: {dominant_evidence_tier}.\n"
+            f"Evidence counts (strong/moderate/weak): {strong_count}/{moderate_count}/{weak_count}.\n"
             f"Provide a structured clinical interpretation broken perfectly into these three exact Markdown headings:\n"
             f"### Interpretation\n"
             f"### Key Considerations\n"
@@ -172,7 +225,7 @@ class BrugadaChatbot:
         )
         if advice and not advice.strip().lower().startswith(non_cache_prefixes):
             self._advice_cache[cache_key] = advice
-            print(f"[Cached] Stored advice for {label} (prob ~{prob_rounded}) for future use")
+            print(f"[Cached] Stored advice for key={cache_key}")
         return advice
 
     def continue_conversation(self, user_message: str) -> str:

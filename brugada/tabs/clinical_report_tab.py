@@ -308,7 +308,7 @@ def render_clinical_report_tab(
                 st.info("No extractable V1-V3 morphology evidence for this record.")
 
         with st.expander("View 12-lead ECG", expanded=False):
-            plot_highlights = highlights if (label == "Brugada Syndrome Detected" or gray_zone) else {}
+            plot_highlights = highlights if isinstance(highlights, dict) else {}
             ecg_fig = _plot_12_lead(
                 signal=signal_plot,
                 lead_names=lead_names,
@@ -316,6 +316,7 @@ def render_clinical_report_tab(
                 highlights=plot_highlights,
             )
             st.pyplot(ecg_fig, clear_figure=True)
+            st.info("For stable magnified diagnosis, use the dedicated ECG Review tab for per-lead inspection.")
 
         with st.expander("Detailed Clinical Explanation & Evidence", expanded=False):
             st.write(explanation or "No explanation text returned by model.")

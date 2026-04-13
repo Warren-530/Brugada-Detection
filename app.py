@@ -4,6 +4,7 @@ from brugada.app_state import clear_uploads, ensure_app_state
 from brugada.app_tabs import (
     render_chatbot_tab,
     render_clinical_report_tab,
+    render_ecg_review_tab,
     render_records_tab,
 )
 from brugada.ui.components import inject_custom_css
@@ -30,7 +31,9 @@ batch_patient_id_map = input_ctx["batch_patient_id_map"]
 is_batch = input_ctx["is_batch"]
 
 with right:
-    tab_report, tab_chatbot, tab_records = st.tabs(["Clinical Report", "AI Advisor", "Records Center"])
+    tab_report, tab_ecg_review, tab_chatbot, tab_records = st.tabs(
+        ["Clinical Report", "ECG Review", "AI Advisor", "Records Center"]
+    )
 
     with tab_report:
         single_result_to_show, current_view = render_clinical_report_tab(
@@ -40,6 +43,13 @@ with right:
             is_batch=is_batch,
             patient_id=patient_id,
             batch_patient_id_map=batch_patient_id_map,
+        )
+
+    with tab_ecg_review:
+        render_ecg_review_tab(
+            single_result_to_show=single_result_to_show,
+            is_batch=is_batch,
+            current_view=current_view,
         )
 
     with tab_chatbot:
