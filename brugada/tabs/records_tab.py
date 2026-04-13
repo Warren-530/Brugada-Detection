@@ -31,10 +31,24 @@ def render_records_tab():
         counts = {"active": 0, "archived": 0, "deleted": 0}
 
     with st.expander("Registry Overview", expanded=True):
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Active", str(counts.get("active", 0)))
-        c2.metric("Archived", str(counts.get("archived", 0)))
-        c3.metric("Deleted", str(counts.get("deleted", 0)))
+        st.markdown("<div style='margin: -1rem -1rem 0 -1rem;'>", unsafe_allow_html=True)
+        col1, col2, col3 = st.columns(3, gap="small")
+        with col1:
+            st.markdown(
+                f"<div style='border: 2px solid #e5e7eb; border-radius: 0.5rem; padding: 0.7rem; text-align: center; background-color: #ffffff;'><div style='color: #6b7280; font-size: 0.8rem; margin-bottom: 0.3rem;'>Active</div><div style='color: #1f2937; font-size: 1.5rem; font-weight: bold;'>{counts.get('active', 0)}</div></div>",
+                unsafe_allow_html=True,
+            )
+        with col2:
+            st.markdown(
+                f"<div style='border: 2px solid #e5e7eb; border-radius: 0.5rem; padding: 0.7rem; text-align: center; background-color: #ffffff;'><div style='color: #6b7280; font-size: 0.8rem; margin-bottom: 0.3rem;'>Archived</div><div style='color: #1f2937; font-size: 1.5rem; font-weight: bold;'>{counts.get('archived', 0)}</div></div>",
+                unsafe_allow_html=True,
+            )
+        with col3:
+            st.markdown(
+                f"<div style='border: 2px solid #e5e7eb; border-radius: 0.5rem; padding: 0.7rem; text-align: center; background-color: #ffffff;'><div style='color: #6b7280; font-size: 0.8rem; margin-bottom: 0.3rem;'>Deleted</div><div style='color: #1f2937; font-size: 1.5rem; font-weight: bold;'>{counts.get('deleted', 0)}</div></div>",
+                unsafe_allow_html=True,
+            )
+        st.markdown("</div>", unsafe_allow_html=True)
 
     status_map = {
         "Active": "active",
@@ -52,35 +66,49 @@ def render_records_tab():
         st.error(f"Unable to load records: {list_exc}")
         records = []
 
+    # Handle empty records - continue with empty dataframe instead of returning
     if not records:
-        st.markdown(
-            f"<div style='margin-bottom: 1rem; padding: 0.8rem; border-radius: 0.5rem; background-color: #e0f2fe; color: #075985; display: flex; align-items: center;'>{SVG_INFO} No records found for the selected filter.</div>",
-            unsafe_allow_html=True,
-        )
-        return
-
-    records_df = pd.DataFrame(records)
-    records_df["risk_score_pct"] = (records_df["probability_display"] * 100.0).round(2)
-    records_df["boundary_distance_pp"] = records_df["decision_stability_display"].round(2)
-
-    label_series = records_df["label"].fillna("").astype(str)
-    sick_mask = label_series.str.contains("Brugada Syndrome Detected", case=False, na=False)
-    gray_zone_mask = records_df["gray_zone"].fillna(False).astype(bool)
-
-    total_in_view = int(len(records_df))
-    sick_count = int(sick_mask.sum())
-    not_sick_count = int(total_in_view - sick_count)
-    gray_zone_count = int(gray_zone_mask.sum())
-
+        records = []
+    
     # Get patient_id from sidebar Optional Metadata
     sidebar_patient_id = st.session_state.get("patient_id_input", "").strip() or None
 
-    # Auto-fill empty patient_id cells with sidebar patient_id
-    if sidebar_patient_id:
-        records_df["patient_id"] = records_df["patient_id"].fillna(sidebar_patient_id)
-        records_df["patient_id"] = records_df["patient_id"].apply(
-            lambda x: sidebar_patient_id if (x == "" or pd.isna(x)) else x
-        )
+    # Create dataframe from records or empty dataframe if no records
+    if records:
+        records_df = pd.DataFrame(records)
+        records_df["risk_score_pct"] = (records_df["probability_display"] * 100.0).round(2)
+        records_df["boundary_distance_pp"] = records_df["decision_stability_display"].round(2)
+
+        label_series = records_df["label"].fillna("").astype(str)
+        sick_mask = label_series.str.contains("Brugada Syndrome Detected", case=False, na=False)
+        gray_zone_mask = records_df["gray_zone"].fillna(False).astype(bool)
+
+        total_in_view = int(len(records_df))
+        sick_count = int(sick_mask.sum())
+        not_sick_count = int(total_in_view - sick_count)
+        gray_zone_count = int(gray_zone_mask.sum())
+
+        # Auto-fill empty patient_id cells with sidebar patient_id
+        if sidebar_patient_id:
+            records_df["patient_id"] = records_df["patient_id"].fillna(sidebar_patient_id)
+            records_df["patient_id"] = records_df["patient_id"].apply(
+                lambda x: sidebar_patient_id if (x == "" or pd.isna(x)) else x
+            )
+    else:
+        # Empty dataframe structure for no records
+        records_df = pd.DataFrame(columns=[
+            "record_uid", "record_name", "patient_id", "doctor_feedback", 
+            "doctor_feedback_note", "label", "probability_display", 
+            "decision_stability_display", "recommendation_tier", "status", 
+            "created_at", "gray_zone", "evidence_summary", "risk_score_pct", 
+            "boundary_distance_pp"
+        ])
+        total_in_view = 0
+        sick_count = 0
+        not_sick_count = 0
+        gray_zone_count = 0
+        sick_mask = pd.Series([], dtype=bool)
+        gray_zone_mask = pd.Series([], dtype=bool)
 
     editor_df = pd.DataFrame(
         {
@@ -102,63 +130,83 @@ def render_records_tab():
 
     with st.expander("Patient Status Summary and Sick-Flag Reasons", expanded=True):
         st.caption("Summary for records in the current filter and search view.")
-        s1, s2, s3, s4 = st.columns(4)
-        s1.metric("Patients in View", str(total_in_view))
-        s2.metric("Sick (Brugada Detected)", str(sick_count))
-        s3.metric("Not Sick", str(not_sick_count))
-        s4.metric("Gray-Zone", str(gray_zone_count))
-        st.divider()
-        st.write("Why patients are flagged as sick")
-        if sick_count == 0:
+        st.markdown("<div style='margin: -1rem -1rem 0.5rem -1rem;'>", unsafe_allow_html=True)
+        s1, s2, s3, s4 = st.columns(4, gap="small")
+        with s1:
             st.markdown(
-                f"<div style='margin-bottom: 1rem; padding: 0.8rem; border-radius: 0.5rem; background-color: #e0f2fe; color: #075985; display: flex; align-items: center;'>{SVG_INFO} No records labeled as Brugada Syndrome Detected in the current view.</div>",
+                f"<div style='border: 2px solid #e5e7eb; border-radius: 0.5rem; padding: 0.7rem; text-align: center; background-color: #ffffff;'><div style='color: #6b7280; font-size: 0.75rem; margin-bottom: 0.3rem;'>Patients in View</div><div style='color: #1f2937; font-size: 1.5rem; font-weight: bold;'>{total_in_view}</div></div>",
                 unsafe_allow_html=True,
             )
-        else:
-            sick_df = records_df[sick_mask].copy()
-
-            tier_summary = (
-                sick_df.groupby("recommendation_tier", dropna=False)
-                .agg(
-                    patients=("record_uid", "count"),
-                    mean_risk_score_pct=("risk_score_pct", "mean"),
-                    mean_boundary_distance_pp=("boundary_distance_pp", "mean"),
+        with s2:
+            st.markdown(
+                f"<div style='border: 2px solid #e5e7eb; border-radius: 0.5rem; padding: 0.7rem; text-align: center; background-color: #ffffff;'><div style='color: #6b7280; font-size: 0.75rem; margin-bottom: 0.3rem;'>Sick (Brugada)</div><div style='color: #1f2937; font-size: 1.5rem; font-weight: bold;'>{sick_count}</div></div>",
+                unsafe_allow_html=True,
+            )
+        with s3:
+            st.markdown(
+                f"<div style='border: 2px solid #e5e7eb; border-radius: 0.5rem; padding: 0.7rem; text-align: center; background-color: #ffffff;'><div style='color: #6b7280; font-size: 0.75rem; margin-bottom: 0.3rem;'>Not Sick</div><div style='color: #1f2937; font-size: 1.5rem; font-weight: bold;'>{not_sick_count}</div></div>",
+                unsafe_allow_html=True,
+            )
+        with s4:
+            st.markdown(
+                f"<div style='border: 2px solid #e5e7eb; border-radius: 0.5rem; padding: 0.7rem; text-align: center; background-color: #ffffff;'><div style='color: #6b7280; font-size: 0.75rem; margin-bottom: 0.3rem;'>Gray-Zone</div><div style='color: #1f2937; font-size: 1.5rem; font-weight: bold;'>{gray_zone_count}</div></div>",
+                unsafe_allow_html=True,
+            )
+        st.markdown("</div>", unsafe_allow_html=True)
+        
+        if total_in_view > 0:
+            st.divider()
+            st.write("Why patients are flagged as sick")
+            if sick_count == 0:
+                st.markdown(
+                    f"<div style='margin-bottom: 1rem; padding: 0.8rem; border-radius: 0.5rem; background-color: #e0f2fe; color: #075985; display: flex; align-items: center;'>{SVG_INFO} No records labeled as Brugada Syndrome Detected in the current view.</div>",
+                    unsafe_allow_html=True,
                 )
-                .reset_index()
-                .sort_values(["patients", "mean_risk_score_pct"], ascending=[False, False])
-            )
-            tier_summary["recommendation_tier"] = tier_summary["recommendation_tier"].fillna("unknown")
-            tier_summary["mean_risk_score_pct"] = tier_summary["mean_risk_score_pct"].round(2)
-            tier_summary["mean_boundary_distance_pp"] = tier_summary["mean_boundary_distance_pp"].round(2)
+            else:
+                sick_df = records_df[sick_mask].copy()
 
-            evidence_summary = (
-                sick_df.groupby("evidence_summary", dropna=False)
-                .agg(patients=("record_uid", "count"))
-                .reset_index()
-                .sort_values("patients", ascending=False)
-                .head(5)
-            )
-            evidence_summary["evidence_summary"] = evidence_summary["evidence_summary"].fillna("S0/M0/W0")
+                tier_summary = (
+                    sick_df.groupby("recommendation_tier", dropna=False)
+                    .agg(
+                        patients=("record_uid", "count"),
+                        mean_risk_score_pct=("risk_score_pct", "mean"),
+                        mean_boundary_distance_pp=("boundary_distance_pp", "mean"),
+                    )
+                    .reset_index()
+                    .sort_values(["patients", "mean_risk_score_pct"], ascending=[False, False])
+                )
+                tier_summary["recommendation_tier"] = tier_summary["recommendation_tier"].fillna("unknown")
+                tier_summary["mean_risk_score_pct"] = tier_summary["mean_risk_score_pct"].round(2)
+                tier_summary["mean_boundary_distance_pp"] = tier_summary["mean_boundary_distance_pp"].round(2)
 
-            top_recommendations = (
-                sick_df["recommendation_text"]
-                .fillna("Clinical correlation is recommended.")
-                .replace("", "Clinical correlation is recommended.")
-                .value_counts()
-                .head(3)
-            )
+                evidence_summary = (
+                    sick_df.groupby("evidence_summary", dropna=False)
+                    .agg(patients=("record_uid", "count"))
+                    .reset_index()
+                    .sort_values("patients", ascending=False)
+                    .head(5)
+                )
+                evidence_summary["evidence_summary"] = evidence_summary["evidence_summary"].fillna("S0/M0/W0")
 
-            st.caption("Recommendation tiers and risk profile among sick patients.")
-            st.dataframe(tier_summary, use_container_width=True, hide_index=True)
+                top_recommendations = (
+                    sick_df["recommendation_text"]
+                    .fillna("Clinical correlation is recommended.")
+                    .replace("", "Clinical correlation is recommended.")
+                    .value_counts()
+                    .head(3)
+                )
 
-            rs1, rs2 = st.columns(2)
-            with rs1:
-                st.caption("Most common evidence strength patterns (S/M/W).")
-                st.dataframe(evidence_summary, use_container_width=True, hide_index=True)
-            with rs2:
-                st.caption("Top recommendation reasons returned by the model.")
-                for recommendation_text, n_patients in top_recommendations.items():
-                    st.write(f"- {int(n_patients)} patient(s): {recommendation_text}")
+                st.caption("Recommendation tiers and risk profile among sick patients.")
+                st.dataframe(tier_summary, use_container_width=True, hide_index=True)
+
+                rs1, rs2 = st.columns(2)
+                with rs1:
+                    st.caption("Most common evidence strength patterns (S/M/W).")
+                    st.dataframe(evidence_summary, use_container_width=True, hide_index=True)
+                with rs2:
+                    st.caption("Top recommendation reasons returned by the model.")
+                    for recommendation_text, n_patients in top_recommendations.items():
+                        st.write(f"- {int(n_patients)} patient(s): {recommendation_text}")
     selected_items = []
     summary_selected_uid = None
     with st.expander("Records Table, Patient ID Edits, and Bulk Actions", expanded=True):
