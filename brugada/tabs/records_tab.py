@@ -1,6 +1,7 @@
 import pandas as pd
 import streamlit as st
 
+from brugada.analytics import compute_feedback_proxy_metrics, compute_operational_metrics
 from brugada.storage.record_store import (
     get_record_counts,
     get_record_payload,
@@ -127,6 +128,75 @@ def render_records_tab():
             "evidence_summary": records_df["evidence_summary"],
         }
     )
+
+    with st.expander("Operational Metrics Dashboard", expanded=False):
+        window_options = {
+            "All history": None,
+            "Last 7 days": 7,
+            "Last 30 days": 30,
+            "Last 90 days": 90,
+        }
+        selected_window = st.selectbox(
+            "Metrics Time Window",
+            options=list(window_options.keys()),
+            key="records_metrics_window",
+            help="Applies only to dashboard metrics below and does not alter table records.",
+        )
+        window_days = window_options[selected_window]
+
+        operational = compute_operational_metrics(records, window_days=window_days)
+        proxy = compute_feedback_proxy_metrics(records, window_days=window_days)
+
+        st.caption(
+            "Challenge-facing operational metrics from local records. "
+            "Calibration panel uses doctor feedback as weak labels (proxy only)."
+        )
+
+        o1, o2, o3 = st.columns(3)
+        o4, o5, o6 = st.columns(3)
+        with o1:
+            st.metric("Records in Scope", int(operational.get("n_records", 0)))
+        with o2:
+            st.metric("Mean Risk Score", f"{float(operational.get('mean_risk_pct', 0.0)):.2f}%")
+        with o3:
+            st.metric("Gray-Zone Rate", f"{float(operational.get('gray_zone_rate', 0.0)):.2f}%")
+        with o4:
+            st.metric("Urgent-Tier Rate", f"{float(operational.get('urgent_rate', 0.0)):.2f}%")
+        with o5:
+            st.metric("High-Risk Rate (>=35%)", f"{float(operational.get('high_risk_rate', 0.0)):.2f}%")
+        with o6:
+            st.metric("Median Stability", f"{float(operational.get('median_stability', 0.0)):.2f} pp")
+
+        hist_rows = operational.get("risk_histogram", [])
+        if hist_rows:
+            hist_df = pd.DataFrame(hist_rows)
+            st.subheader("Risk Score Distribution")
+            st.bar_chart(hist_df.set_index("band")["count"])
+
+        tier_rows = operational.get("tier_distribution", [])
+        if tier_rows:
+            st.subheader("Recommendation Tier Mix")
+            st.dataframe(pd.DataFrame(tier_rows), use_container_width=True, hide_index=True)
+
+        st.subheader("Doctor Feedback Proxy Panel")
+        st.caption("Proxy only: feedback is not equivalent to confirmed diagnosis labels.")
+        p1, p2, p3 = st.columns(3)
+        with p1:
+            st.metric("Feedback Records", int(proxy.get("n_feedback", 0)))
+        with p2:
+            st.metric("Agreement Rate", f"{float(proxy.get('agreement_rate', 0.0)):.2f}%")
+        with p3:
+            st.metric("Disagreement Rate", f"{float(proxy.get('disagreement_rate', 0.0)):.2f}%")
+
+        confusion_rows = proxy.get("proxy_confusion", [])
+        if confusion_rows:
+            st.caption("Predicted label groups vs doctor feedback.")
+            st.dataframe(pd.DataFrame(confusion_rows), use_container_width=True, hide_index=True)
+
+        risk_band_rows = proxy.get("risk_band_disagreement", [])
+        if risk_band_rows:
+            st.caption("Disagreement concentration by risk band.")
+            st.dataframe(pd.DataFrame(risk_band_rows), use_container_width=True, hide_index=True)
 
     with st.expander("Patient Status Summary and Sick-Flag Reasons", expanded=True):
         st.caption("Summary for records in the current filter and search view.")

@@ -1,8 +1,12 @@
+from datetime import datetime, timezone
 import pandas as pd
+import re
 import streamlit as st
 
+from brugada.analytics import find_similar_cases, normalize_result_snapshot
+from brugada.export import build_batch_html_zip, build_single_case_html_report
 from brugada.inference.pipeline import predict_from_record
-from brugada.storage.record_store import save_batch_results, save_record_result
+from brugada.storage.record_store import get_record_payload, list_records, save_batch_results, save_record_result
 from brugada.ui.components import (
     DEFAULT_LEAD_NAMES,
     SVG_ERROR,
@@ -287,6 +291,111 @@ def render_clinical_report_tab(
         if next_actions:
             st.info(f"Next action: {next_actions[0]}")
 
+        snapshot = normalize_result_snapshot(
+            result,
+            fallback_record_name=current_view if current_view != "Batch Summary" else "Current Case",
+        )
+        export_record_name = snapshot.get("record_name", "Current Case")
+        export_patient_id = snapshot.get("patient_id", "") or (patient_id or "")
+        export_scope = snapshot.get("record_uid", "") or export_record_name
+        export_scope = re.sub(r"[^0-9A-Za-z_-]", "_", str(export_scope))
+
+        st.markdown("### Report Export")
+        export_btn_col, export_dl_col = st.columns([1, 2])
+        export_html_state_key = f"clinical_export_html_{export_scope}"
+
+        with export_btn_col:
+            if st.button("Prepare HTML Clinical Report", key=f"prepare_single_html_{export_scope}", use_container_width=True):
+                html_report = build_single_case_html_report(
+                    result=result,
+                    record_name=export_record_name,
+                    patient_id=export_patient_id,
+                    generated_at_utc=datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+                )
+                st.session_state[export_html_state_key] = html_report.encode("utf-8")
+
+        with export_dl_col:
+            html_bytes = st.session_state.get(export_html_state_key)
+            if isinstance(html_bytes, (bytes, bytearray)):
+                safe_file_stem = re.sub(r"[^0-9A-Za-z_-]", "_", export_record_name).strip("_") or "clinical_report"
+                st.download_button(
+                    "Download HTML Clinical Report",
+                    data=html_bytes,
+                    file_name=f"{safe_file_stem}_clinical_report.html",
+                    mime="text/html",
+                    key=f"download_single_html_{export_scope}",
+                    use_container_width=True,
+                )
+            else:
+                st.caption("Prepare the report once, then download as printable HTML.")
+
+        st.markdown("### Similar Local Cases")
+        if st.session_state.record_store_ready:
+            try:
+                candidate_records = [
+                    item
+                    for item in list_records(status="all", limit=1000)
+                    if isinstance(item, dict) and str(item.get("status", "")).lower() != "deleted"
+                ]
+            except Exception as retrieval_exc:  # noqa: BLE001
+                candidate_records = []
+                st.warning(f"Unable to query local case library: {retrieval_exc}")
+
+            similar_cases = find_similar_cases(result, candidate_records, top_k=5)
+            if similar_cases:
+                similar_df = pd.DataFrame(similar_cases)
+                display_df = similar_df.copy()
+                display_df["risk_score_%"] = (display_df["probability_display"] * 100.0).round(2)
+                display_df["similarity_%"] = display_df["similarity_score"].round(2)
+                show_cols = [
+                    "record_name",
+                    "patient_id",
+                    "similarity_%",
+                    "risk_score_%",
+                    "probability_delta",
+                    "decision_stability_display",
+                    "recommendation_tier",
+                    "evidence_summary",
+                    "created_at",
+                ]
+                st.dataframe(display_df[show_cols], use_container_width=True, hide_index=True)
+
+                load_options = {
+                    (
+                        f"{row['record_name']} | similarity {row['similarity_score']:.1f}% | "
+                        f"risk {row['probability_display'] * 100.0:.1f}%"
+                    ): row["record_uid"]
+                    for row in similar_cases
+                    if row.get("record_uid")
+                }
+                if load_options:
+                    option_labels = list(load_options.keys())
+                    selected_label = st.selectbox(
+                        "Load similar case",
+                        options=option_labels,
+                        key=f"similar_case_selector_{export_scope}",
+                    )
+                    if st.button("Load selected similar case", key=f"load_similar_case_{export_scope}"):
+                        target_uid = load_options.get(selected_label, "")
+                        payload = get_record_payload(target_uid)
+                        if not isinstance(payload, dict):
+                            st.error("Unable to load selected similar case payload from local storage.")
+                        else:
+                            st.session_state.records_loaded_result = payload
+                            st.session_state.last_ml_result = payload
+                            if "batch_results" in st.session_state:
+                                del st.session_state.batch_results
+                            st.session_state.current_view = "Batch Summary"
+                            st.session_state.persistence_notice = "Loaded selected similar case into Clinical Report."
+                            if st.session_state.chatbot_ready:
+                                st.session_state.chatbot.reset_conversation()
+                                st.session_state.conversation_history = []
+                            st.rerun()
+            else:
+                st.info("No similar local cases found yet. Run or load more records into Records Center to activate retrieval.")
+        else:
+            st.info("Local record store is unavailable, so similar-case retrieval is currently disabled.")
+
         st.markdown("### Key Evidence")
         v1, v2 = st.columns(2)
 
@@ -392,6 +501,27 @@ def render_clinical_report_tab(
             )
         else:
             df = pd.DataFrame(batch_results)
+            batch_export_state_key = "clinical_export_batch_zip"
+            b1, b2 = st.columns([1, 2])
+            with b1:
+                if st.button("Prepare Batch HTML ZIP", key="prepare_batch_html_zip", use_container_width=True):
+                    batch_zip = build_batch_html_zip(batch_results, batch_name="batch_clinical_reports")
+                    st.session_state[batch_export_state_key] = batch_zip
+            with b2:
+                batch_zip_bytes = st.session_state.get(batch_export_state_key)
+                if isinstance(batch_zip_bytes, (bytes, bytearray)):
+                    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%SZ")
+                    st.download_button(
+                        "Download Batch HTML Reports (ZIP)",
+                        data=batch_zip_bytes,
+                        file_name=f"brugada_batch_reports_{ts}.zip",
+                        mime="application/zip",
+                        key="download_batch_html_zip",
+                        use_container_width=True,
+                    )
+                else:
+                    st.caption("Prepare batch package once, then download all case reports in a ZIP archive.")
+
             sort_prob_col = "probability_raw" if "probability_raw" in df.columns else "probability"
             sort_stability_col = "decision_stability_raw" if "decision_stability_raw" in df.columns else "decision_stability"
             if "recommendation_tier" in df.columns:
