@@ -177,7 +177,9 @@ def render_records_tab():
         tier_rows = operational.get("tier_distribution", [])
         if tier_rows:
             st.subheader("Recommendation Tier Mix")
-            st.dataframe(pd.DataFrame(tier_rows), use_container_width=True, hide_index=True)
+            tier_df = pd.DataFrame(tier_rows)
+            tier_df["recommendation_tier"] = tier_df["recommendation_tier"].apply(format_recommendation_tier)
+            st.dataframe(tier_df, use_container_width=True, hide_index=True)
 
         st.subheader("Doctor Feedback Proxy Panel")
         st.caption("Proxy only: feedback is not equivalent to confirmed diagnosis labels.")

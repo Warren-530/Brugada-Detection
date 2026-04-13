@@ -18,6 +18,7 @@ from brugada.ui.components import (
     _plot_decision_margin,
     _plot_evidence_heatmap,
 )
+from brugada.ui.helpers import format_recommendation_tier
 
 
 def _result_get(value: Any, key: str, default: Any = None) -> Any:
@@ -341,7 +342,7 @@ def build_single_case_html_report(
     <div><strong>Patient ID:</strong> {html.escape(display_patient_id)}</div>
     <div><strong>Record UID:</strong> {html.escape(display_record_uid)}</div>
     <div><strong>Label:</strong> {html.escape(label)}</div>
-    <div><strong>Recommendation Tier:</strong> {html.escape(recommendation_tier)}</div>
+    <div><strong>Recommendation Tier:</strong> {html.escape(format_recommendation_tier(recommendation_tier))}</div>
     <div><strong>Evidence Summary:</strong> {html.escape(evidence_summary)}</div>
     <div><strong>Gray Zone:</strong> {"Yes" if gray_zone else "No"}</div>
     <div><strong>Raw Decision Threshold:</strong> {threshold_raw:.3f}</div>
