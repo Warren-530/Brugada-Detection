@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 import pandas as pd
 import re
+import numpy as np
 import streamlit as st
 
 from brugada.analytics import find_similar_cases, normalize_result_snapshot
@@ -153,20 +154,30 @@ def render_clinical_report_tab(
     single_result_to_show = None
     has_results = False
 
-    loaded_record_result = st.session_state.get("records_loaded_result")
-    if loaded_record_result is not None:
-        single_result_to_show = loaded_record_result
-        has_results = True
-    elif not is_batch and st.session_state.last_ml_result is not None:
+    # Priority: if viewing batch results and user selected specific record, show that record
+    batch_results = st.session_state.get("batch_results")
+    if batch_results and current_view != "Batch Summary":
+        for res in batch_results:
+            if res["record"] == current_view:
+                single_result_to_show = res.get("raw")
+                has_results = True
+                break
+    
+    # Fall back to loaded record result
+    if single_result_to_show is None:
+        loaded_record_result = st.session_state.get("records_loaded_result")
+        if loaded_record_result is not None:
+            single_result_to_show = loaded_record_result
+            has_results = True
+    
+    # Fall back to single ML result (non-batch mode)
+    if single_result_to_show is None and not is_batch and st.session_state.last_ml_result is not None:
         single_result_to_show = st.session_state.last_ml_result
         has_results = True
-    elif "batch_results" in st.session_state:
+    
+    # Fall back to any batch results (for Batch Summary view)
+    if single_result_to_show is None and batch_results:
         has_results = True
-        if current_view != "Batch Summary":
-            for res in st.session_state.batch_results:
-                if res["record"] == current_view:
-                    single_result_to_show = res.get("raw")
-                    break
 
     if not has_results:
         st.markdown(
@@ -225,6 +236,13 @@ def render_clinical_report_tab(
         evidence_counts = clinician_explain.get("evidence_counts", {})
         next_actions = clinician_explain.get("next_actions", []) if isinstance(clinician_explain.get("next_actions", []), list) else []
         mismatch = bool(clinician_explain.get("morphology_model_mismatch", False))
+
+        # Display record number when viewing individual record from batch
+        if current_view != "Batch Summary":
+            st.markdown(
+                f"<div style='margin-bottom: 1rem; padding: 0.8rem; border-radius: 0.5rem; background-color: #f0f9ff; color: #0c4a6e; font-weight: 600; font-size: 1.05em;'>Record: <span style='font-family: monospace; color: #0369a1;'>{current_view}</span></div>",
+                unsafe_allow_html=True,
+            )
 
         if label == "Brugada Syndrome Detected":
             st.markdown(
@@ -420,14 +438,41 @@ def render_clinical_report_tab(
                 st.info("No extractable V1-V3 morphology evidence for this record.")
 
         with st.expander("View 12-lead ECG", expanded=False):
-            plot_highlights = highlights if isinstance(highlights, dict) else {}
-            ecg_fig = _plot_12_lead(
-                signal=signal_plot,
-                lead_names=lead_names,
-                fs=fs_plot,
-                highlights=plot_highlights,
-            )
-            st.pyplot(ecg_fig, clear_figure=True)
+            # Optimize ECG rendering with session-level caching
+            import hashlib
+            signal_array = signal_plot
+            if signal_array is not None:
+                try:
+                    signal_bytes = np.array(signal_array).tobytes()
+                    signal_hash = hashlib.md5(signal_bytes).hexdigest()[:8]
+                    cache_key = f"ecg_plot_{signal_hash}_{fs_plot}"
+                    
+                    if cache_key not in st.session_state:
+                        # Generate and cache the plot
+                        plot_highlights = highlights if isinstance(highlights, dict) else {}
+                        ecg_fig = _plot_12_lead(
+                            signal=signal_plot,
+                            lead_names=lead_names,
+                            fs=fs_plot,
+                            highlights=plot_highlights,
+                        )
+                        st.session_state[cache_key] = ecg_fig
+                    
+                    ecg_fig = st.session_state[cache_key]
+                    st.pyplot(ecg_fig, clear_figure=True)
+                except Exception as ecg_err:  # noqa: BLE001
+                    st.warning(f"ECG rendering optimized (cache error: {str(ecg_err)[:50]})")
+                    plot_highlights = highlights if isinstance(highlights, dict) else {}
+                    ecg_fig = _plot_12_lead(
+                        signal=signal_plot,
+                        lead_names=lead_names,
+                        fs=fs_plot,
+                        highlights=plot_highlights,
+                    )
+                    st.pyplot(ecg_fig, clear_figure=True)
+            else:
+                st.warning("ECG signal data unavailable")
+            
             st.info("For stable magnified diagnosis, use the dedicated ECG Review tab for per-lead inspection.")
 
         with st.expander("Detailed Clinical Explanation & Evidence", expanded=False):

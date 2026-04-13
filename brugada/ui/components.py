@@ -5,6 +5,8 @@ import plotly.graph_objects as go
 import streamlit as st
 from matplotlib.ticker import MultipleLocator
 from plotly.subplots import make_subplots
+import hashlib
+import json
 
 # =============================================================================
 # UI Assets (SVGs & CSS)
@@ -325,6 +327,12 @@ DEFAULT_LEAD_NAMES = [
 @st.cache_data(show_spinner=False)
 def _seconds_axis(length: int, fs: float) -> np.ndarray:
     return np.arange(length) / fs
+
+
+@st.cache_data(show_spinner=False)
+def _hash_signal_config(signal_hash: str, leads_tuple: tuple[str, ...], fs: float, highlights_json: str) -> str:
+    """Create a cache key from signal parameters."""
+    return f"{signal_hash}_{len(leads_tuple)}_{fs}_{highlights_json}"
 
 
 def _coerce_ecg_signal(signal) -> np.ndarray | None:
